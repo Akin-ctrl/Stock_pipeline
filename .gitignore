@@ -1,0 +1,62 @@
+# ----------------------
+# Python
+# ----------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# ----------------------
+# Virtual environments
+# ----------------------
+.env
+.venv
+env/
+venv/
+ENV/
+*.env
+*.dotenv
+
+# ----------------------
+# Jupyter Notebooks
+# ----------------------
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# ----------------------
+# Logs and temp files
+# ----------------------
+*.log
+*.tmp
+*.out
+*.pid
+
+# ----------------------
+# Data (raw, processed, downloaded stock data)
+# ----------------------
+data/
+raw/
+processed/
+*.csv
+*.tsv
+*.parquet
+*.json
+*.xlsx
+*.h5
+*.db
+*.sqlite
+
+
+# ----------------------
+# Cache / Compiled
+# ----------------------
+.cache/
+__pycache__/
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-wheel-metadata/
+.wheels/
+

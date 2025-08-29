@@ -1,0 +1,152 @@
+
+
+# version: '3.8'
+
+# services:
+#   postgres:
+#     image: postgres:16
+#     container_name: postgres
+#     restart: always
+#     environment:
+#       POSTGRES_USER: ${PGUSER}
+#       POSTGRES_PASSWORD: ${PGPASSWORD}
+#       POSTGRES_DB: ${PGDATABASE}
+#     ports:
+#       - "5432:5432"
+#     volumes:
+#       - pg_data:/var/lib/postgresql/data
+
+#   pgadmin:
+#     image: dpage/pgadmin4
+#     container_name: pgadmin
+#     restart: always
+#     environment:
+#       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+#       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+#     ports:
+#       - "5050:80"
+#     depends_on:
+#       - postgres
+
+#   superset:
+#     image: apache/superset
+#     container_name: superset
+#     restart: always
+#     ports:
+#       - "8088:8088"
+#     environment:
+#       SUPERSET_ENV: production
+#       SUPERSET_LOAD_EXAMPLES: "no"
+#       SECRET_KEY: "3XRD6xmUdq/Lk0G6EqINW9AU+VnMesGwZ6YKI2i7moDHm/DWvoZxSKHs"
+
+#     depends_on:
+#       - postgres
+#     volumes:
+#       - superset_home:/app/superset_home
+
+#   app:
+#     build:
+#       context: ./app
+#     container_name: stock-ingest
+#     restart: on-failure
+#     working_dir: /app
+#     volumes:
+#       - ./app:/app
+#     environment:
+#       - DB_HOST=postgres
+#       - DB_NAME=${PGDATABASE}
+#       - DB_USER=${PGUSER}
+#       - DB_PASS=${PGPASSWORD}
+#     command: ["python", "scripts/load.py"]
+#     depends_on:
+#       - postgres
+
+#   airflow:
+#     image: apache/airflow:2.9.1-python3.10
+#     container_name: airflow
+#     restart: always
+#     environment:
+#       AIRFLOW__CORE__EXECUTOR: LocalExecutor
+#       AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${PGUSER}:${PGPASSWORD}@postgres:5432/${PGDATABASE}
+#       AIRFLOW__CORE__FERNET_KEY: ''
+#       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+#       AIRFLOW__WEBSERVER__RBAC: 'true'
+#     volumes:
+#       - ./airflow/dags:/opt/airflow/dags
+#       - ./airflow/logs:/opt/airflow/logs
+#       - ./airflow/plugins:/opt/airflow/plugins
+#     ports:
+#       - "8080:8080"
+#     depends_on:
+#       - postgres
+
+# volumes:
+#   pg_data:
+#   superset_home:
+
+
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${PGUSER}
+      POSTGRES_PASSWORD: ${PGPASSWORD}
+      POSTGRES_DB: ${PGDATABASE}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+
+  app:
+    build:
+      context: ./app
+    container_name: stock-ingest
+    restart: on-failure
+    working_dir: /app
+    volumes:
+      - ./app:/app
+    environment:
+      - DB_HOST=postgres
+      - DB_NAME=${PGDATABASE}
+      - DB_USER=${PGUSER}
+      - DB_PASS=${PGPASSWORD}
+    command: ["python", "scripts/load.py"]
+    depends_on:
+      - postgres
+
+  airflow:
+    image: apache/airflow:2.9.1-python3.10
+    container_name: airflow
+    restart: always
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${PGUSER}:${PGPASSWORD}@postgres:5432/${PGDATABASE}
+      AIRFLOW__CORE__FERNET_KEY: -wEQ2TK8Ra3EqxbD7xVzeH7ekMqmc05fNJEdLJf-SOU=
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__WEBSERVER__RBAC: 'true'
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    ports:
+      - "8973:8080"
+    depends_on:
+      - postgres
+
+volumes:
+  pg_data:

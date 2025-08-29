@@ -1,0 +1,6 @@
+alpha_vantage
+requests
+pandas
+psycopg2-binary
+python-dotenv
+sqlalchemy
