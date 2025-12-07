@@ -169,3 +169,25 @@ def get_db() -> DatabaseManager:
     if _db_manager is None:
         _db_manager = DatabaseManager()
     return _db_manager
+
+
+def get_session() -> Session:
+    """
+    Get a new database session (not a context manager).
+    
+    WARNING: Caller is responsible for closing the session.
+    Prefer using get_db().get_session() context manager when possible.
+    
+    Returns:
+        SQLAlchemy Session
+        
+    Example:
+        >>> from app.config.database import get_session
+        >>> session = get_session()
+        >>> try:
+        >>>     stock = session.query(Stock).first()
+        >>> finally:
+        >>>     session.close()
+    """
+    db = get_db()
+    return db._session_factory()
