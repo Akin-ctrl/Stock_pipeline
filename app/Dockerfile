@@ -1,15 +1,21 @@
-# Use Python 3.10 slim base image
-FROM python:3.10-slim
+FROM python:3.12-slim
 
-# Set working directory
 WORKDIR /app
 
-# Copy requirements and install dependencies
-COPY requirements.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN apt-get update && apt-get install -y \
+    gcc \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy your whole app code
-COPY . .
+COPY app/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Default command to run your script
-CMD ["python", "scripts/load.py"]
+COPY app/ /app/
+
+# Make entrypoint executable
+RUN chmod +x /app/entrypoint.sh
+
+ENV PYTHONPATH=/app:$PYTHONPATH
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["tail", "-f", "/dev/null"]

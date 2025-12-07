@@ -1,0 +1,65 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+ARCHITECTURE.md
+DESIGN_SUMMARY.md
+DOCKER_SETUP.md
+IMPLEMENTATION_STATUS.md
+
+# Docker
+docker-compose.yml
+Dockerfile
+*.dockerignore
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.env
+.venv
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Testing
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+*.test
+
+# Data and logs (mounted as volumes)
+data/
+logs/
+reports/
+archive/
+
+# Airflow
+airflow/logs/
+airflow/dags/__pycache__/
+
+# Temporary files
+*.log
+*.tmp
+*.out
+*.pid
+*.bak
+*~

@@ -1,6 +1,22 @@
-alpha_vantage
+# Core dependencies
+yfinance
 requests
 pandas
-psycopg2-binary
-python-dotenv
+numpy<2
+beautifulsoup4
+
+# Database
 sqlalchemy
+psycopg2-binary
+
+# Configuration
+python-dotenv
+
+# Testing
+pytest
+
+# Code quality
+black
+
+# Logging
+python-json-logger
