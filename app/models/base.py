@@ -9,8 +9,8 @@ Follows reference.py principles:
 
 from datetime import datetime
 from sqlalchemy import MetaData
-from sqlalchemy.orm import declarative_base, DeclarativeBase
-from typing import Any
+from sqlalchemy.orm import declarative_base
+from typing import Any, Dict
 
 # Naming convention for constraints (improves Alembic migrations)
 convention = {
@@ -61,7 +61,7 @@ class BaseModel(Base):
     """
     __abstract__ = True
     
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """
         Convert model instance to dictionary.
         

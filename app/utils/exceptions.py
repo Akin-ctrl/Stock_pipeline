@@ -7,13 +7,13 @@ Follows reference.py principles:
 - Type safety
 """
 
-from typing import Any, Optional
+from typing import Any, Optional, Dict
 
 
 class StockPipelineError(Exception):
     """Base exception for all stock pipeline errors."""
     
-    def __init__(self, message: str, details: Optional[dict[str, Any]] = None):
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
         """
         Initialize exception with message and optional details.
         

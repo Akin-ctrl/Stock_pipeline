@@ -11,7 +11,7 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Dict
 import json
 
 
@@ -75,7 +75,7 @@ class StructuredLogger:
             '"logger": "%(name)s", "message": "%(message)s"}'
         )
     
-    def _enrich_metadata(self, extra: Optional[dict[str, Any]]) -> dict[str, Any]:
+    def _enrich_metadata(self, extra: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Add correlation ID and timestamp to log metadata."""
         metadata = extra or {}
         if self._correlation_id:
@@ -83,17 +83,17 @@ class StructuredLogger:
         metadata["timestamp_ms"] = datetime.now().timestamp() * 1000
         return metadata
     
-    def debug(self, message: str, extra: Optional[dict[str, Any]] = None) -> None:
+    def debug(self, message: str, extra: Optional[Dict[str, Any]] = None) -> None:
         """Log debug message with optional metadata."""
         enriched = self._enrich_metadata(extra)
         self._logger.debug(f"{message} | {json.dumps(enriched)}")
     
-    def info(self, message: str, extra: Optional[dict[str, Any]] = None) -> None:
+    def info(self, message: str, extra: Optional[Dict[str, Any]] = None) -> None:
         """Log info message with optional metadata."""
         enriched = self._enrich_metadata(extra)
         self._logger.info(f"{message} | {json.dumps(enriched)}")
     
-    def warning(self, message: str, extra: Optional[dict[str, Any]] = None) -> None:
+    def warning(self, message: str, extra: Optional[Dict[str, Any]] = None) -> None:
         """Log warning message with optional metadata."""
         enriched = self._enrich_metadata(extra)
         self._logger.warning(f"{message} | {json.dumps(enriched)}")
@@ -102,7 +102,7 @@ class StructuredLogger:
         self,
         message: str,
         error: Optional[Exception] = None,
-        extra: Optional[dict[str, Any]] = None
+        extra: Optional[Dict[str, Any]] = None
     ) -> None:
         """
         Log error message with optional exception and metadata.
@@ -122,7 +122,7 @@ class StructuredLogger:
         self,
         message: str,
         error: Optional[Exception] = None,
-        extra: Optional[dict[str, Any]] = None
+        extra: Optional[Dict[str, Any]] = None
     ) -> None:
         """Log critical message with optional exception and metadata."""
         enriched = self._enrich_metadata(extra)
@@ -152,7 +152,8 @@ def get_logger(
         >>> logger = get_logger("ingestion")
         >>> logger.info("Started NGX ingestion")
     """
-    log_dir = Path("/home/Stock_pipeline/logs")
+    # Use relative path from project root (works in both host and container)
+    log_dir = Path(__file__).parent.parent.parent / "logs"
     log_file = log_dir / f"{name}.log"
     
     return StructuredLogger(
