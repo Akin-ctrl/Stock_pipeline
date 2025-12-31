@@ -1,7 +1,6 @@
 """
 Alert configuration and history models.
-
-Follows reference.py principles:
+Features:
 - Type hints
 - Clear semantics
 - Business logic

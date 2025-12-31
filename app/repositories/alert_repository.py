@@ -89,6 +89,32 @@ class AlertRepository(BaseRepository[AlertHistory]):
             .all()
         )
     
+    def get_rule_by_id(self, rule_id: int) -> Optional[AlertRule]:
+        """
+        Get alert rule by ID.
+        
+        Args:
+            rule_id: Rule identifier
+            
+        Returns:
+            AlertRule or None
+        """
+        return self.session.query(AlertRule).filter(AlertRule.rule_id == rule_id).first()
+    
+    def create_rule(self, rule: AlertRule) -> int:
+        """
+        Create a new alert rule.
+        
+        Args:
+            rule: AlertRule instance
+            
+        Returns:
+            Created rule ID
+        """
+        self.session.add(rule)
+        self.session.flush()
+        return rule.rule_id
+    
     def activate_rule(self, rule_name: str) -> AlertRule:
         """
         Activate an alert rule.
@@ -263,6 +289,42 @@ class AlertRepository(BaseRepository[AlertHistory]):
         
         if severity:
             query = query.filter(AlertHistory.severity == severity)
+        
+        return query.order_by(desc(AlertHistory.alert_timestamp)).all()
+    
+    def get_alerts_by_date_range(
+        self,
+        start_date: date,
+        end_date: date,
+        stock_id: Optional[int] = None
+    ) -> List[AlertHistory]:
+        """
+        Get alerts within a date range.
+        
+        Args:
+            start_date: Start date (inclusive)
+            end_date: End date (inclusive)
+            stock_id: Optional stock filter
+            
+        Returns:
+            List of alerts in date range
+        """
+        query = (
+            self.session.query(AlertHistory)
+            .options(
+                joinedload(AlertHistory.stock),
+                joinedload(AlertHistory.rule)
+            )
+            .filter(
+                and_(
+                    AlertHistory.alert_date >= start_date,
+                    AlertHistory.alert_date <= end_date
+                )
+            )
+        )
+        
+        if stock_id:
+            query = query.filter(AlertHistory.stock_id == stock_id)
         
         return query.order_by(desc(AlertHistory.alert_timestamp)).all()
     

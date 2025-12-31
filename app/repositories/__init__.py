@@ -10,6 +10,7 @@ from app.repositories.stock_repository import StockRepository
 from app.repositories.price_repository import PriceRepository
 from app.repositories.indicator_repository import IndicatorRepository
 from app.repositories.alert_repository import AlertRepository
+from app.repositories.recommendation_repository import RecommendationRepository
 
 __all__ = [
     'BaseRepository',
@@ -17,4 +18,5 @@ __all__ = [
     'PriceRepository',
     'IndicatorRepository',
     'AlertRepository',
+    'RecommendationRepository',
 ]

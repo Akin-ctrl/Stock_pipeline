@@ -105,3 +105,14 @@ class ConfigurationError(StockPipelineError):
 class MissingConfigError(ConfigurationError):
     """Raised when required configuration is missing."""
     pass
+
+
+# Alert & Notification Exceptions
+class AlertError(StockPipelineError):
+    """Raised when alert operations fail."""
+    pass
+
+
+class NotificationError(AlertError):
+    """Raised when notification sending fails."""
+    pass

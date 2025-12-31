@@ -4,6 +4,7 @@ requests
 pandas
 numpy<2
 beautifulsoup4
+jinja2
 
 # Database
 sqlalchemy
@@ -11,6 +12,10 @@ psycopg2-binary
 
 # Configuration
 python-dotenv
+
+# CLI
+click
+tabulate
 
 # Testing
 pytest

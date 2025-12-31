@@ -1,421 +1,461 @@
-# 📈 Nigerian Stock Exchange Investment Pipeline
+# � Nigerian Stock Pipeline
 
-## 🧑‍💼 **Investor Persona: Nigerian Equity Growth Investor**
+> **Production-Ready MVP** | Daily automated Nigerian Stock Exchange (NGX) data collection, analysis, and investment advisory system.
 
-### 📌 Background:
-
-A data-driven investor focused on **medium- to long-term growth in the Nigerian equity market**. Monitors NGX (Nigerian Stock Exchange) stocks and select LSE-listed Nigerian companies to identify investment opportunities, manage risk, and optimize portfolio performance through technical analysis and automated alerts.
-
----
-
-## 🏢 **Business Scenario**:
-
-Managing a portfolio of Nigerian equities requires daily monitoring of 150+ stocks across multiple sectors. This system provides automated insights to answer:
-
-> **"Which Nigerian stocks are showing early signs of breakout, downturn, or increased volatility that could inform buy/hold/sell decisions?"**
+[![Status](https://img.shields.io/badge/status-production-brightgreen)]()
+[![Python](https://img.shields.io/badge/python-3.11-blue)]()
+[![Docker](https://img.shields.io/badge/docker-ready-blue)]()
+[![License](https://img.shields.io/badge/license-private-red)]()
 
 ---
 
-## 🎯 **Business Requirements**
+## 🎯 What It Does
 
-### 1. **Market Coverage**:
-
-**Primary Market**: Nigerian Stock Exchange (NGX)
-- 156+ listed stocks across 9 sectors
-- Focus on liquid, actively traded stocks
-- Daily price and volume data
-
-**Secondary Market**: London Stock Exchange (LSE)
-- 2 Nigerian stocks with dual listings
-- Cross-market arbitrage opportunities
-
-**Key Sectors**:
-- Financials (Banks, Insurance, Asset Management)
-- Consumer Goods (Food, Beverages, Manufacturing)
-- Oil & Gas (Exploration, Production, Distribution)
-- Industrials (Manufacturing, Construction)
-- Technology & Telecoms
-- Healthcare & Pharmaceuticals
-- Basic Materials
-- Consumer Services
-- Utilities
+Automated **24/7 stock pipeline** for Nigerian equity investors:
+- 📈 **Monitors 154 NGX stocks** daily from african-markets.com
+- 🔍 **Calculates technical indicators** (MA, RSI, MACD, Volatility)
+- 🤖 **Generates investment recommendations** (BUY/SELL/HOLD signals)
+- 📧 **Sends real-time alerts** via Email/Slack
+- ⚡ **Runs autonomously** via Airflow scheduler (3:00 PM WAT)
 
 ---
 
-### 2. **Data Requirements**:
+## 🚀 Quick Start
 
-* **Daily OHLCV data**: Open, High, Low, Close, Volume
-* **Price metrics**: Daily change %, YTD change %
-* **Technical indicators**:
-  - Moving Averages: 20-day & 50-day SMA
-  - RSI (Relative Strength Index): 14-day
-  - MACD: Fast(12), Slow(26), Signal(9)
-  - Bollinger Bands: 20-day period, 2 std deviations
-  - Volatility: 30-day annualized
-  - MA Crossover signals: Golden Cross / Death Cross
+### Local Docker Setup (5 minutes)
 
----
+```bash
+# 1. Clone and configure
+git clone https://github.com/Akin-ctrl/Stock_pipeline.git
+cd Stock_pipeline
+cp .env.example .env
+# Edit .env with your settings
 
-### 3. **Data Sources**:
+# 2. Start all services
+docker compose up -d --build
 
-* **Primary Source**: african-markets.com (NGX web scraping)
-  - Real-time NGX stock prices
-  - Volume and market cap data
-  - Sector classification
+# 3. Access Airflow UI
+open http://localhost:8080
+# Username: admin | Password: admin
 
-* **Secondary Source**: Yahoo Finance API
-  - Historical price data
-  - Backup for missing NGX data
-  - LSE Nigerian stock prices
+# 4. Verify pipeline ran
+docker compose logs -f app
+```
 
----
+### Cloud Deployment (30 minutes)
 
-### 4. **Alert Conditions for Actionable Signals**:
+Deploy to DigitalOcean/AWS for 24/7 operation:
 
-| Condition | Actionable Insight | Severity |
-|-----------|-------------------|----------|
-| Daily % Change > ±5% | Significant price movement | WARNING |
-| Daily % Change > ±10% | Extreme volatility event | CRITICAL |
-| Golden Cross (MA20 > MA50) | Bullish trend signal | INFO |
-| Death Cross (MA20 < MA50) | Bearish trend signal | WARNING |
-| RSI < 30 | Oversold - potential buy | INFO |
-| RSI > 70 | Overbought - potential sell | WARNING |
-| Volatility > 30% | High risk period | WARNING |
-| Volume > 2× 30-day average | Unusual activity | INFO |
+```bash
+# Transfer to cloud server
+tar -czf stock_pipeline.tar.gz Stock_pipeline/
+scp stock_pipeline.tar.gz root@<server-ip>:/root/
 
----
+# SSH and start
+ssh root@<server-ip>
+cd Stock_pipeline
+docker compose up -d --build
 
-### 5. **System Outputs**:
+# Access remote Airflow: http://<server-ip>:8080
+```
 
-* **Daily automated alerts**: Email/Slack notifications for triggered conditions
-* **Investment dashboard**: Web-based visualization (future phase)
-  - Price charts with MA overlays
-  - Technical indicator trends
-  - Alert history and portfolio impact
-* **Data exports**: CSV/JSON for external analysis
-* **Performance reports**: Weekly/monthly portfolio summaries
+See **[Deployment Guide](./docs/3_DEPLOYMENT_GUIDE.md)** for detailed cloud setup.
 
 ---
 
-### 6. **System Requirements**:
+## 📊 Current Status
 
-* ✅ **Fully automated ETL pipeline**: Fetch → Validate → Transform → Load → Analyze
-* ✅ **Historical data storage**: PostgreSQL with 5+ years capacity
-* ✅ **Containerized deployment**: Docker Compose for portability
-* ✅ **Production-grade code**: Type hints, comprehensive tests, structured logging
-* ✅ **Scheduling**: Airflow DAG for daily 3PM WAT execution (after market close)
-* ✅ **Version control**: Git with comprehensive commit history
-* ✅ **Monitoring**: Pipeline metrics, error tracking, data quality checks
+### ✅ PRODUCTION READY
+- **154 stocks** loaded (12 NGX sectors)
+- **Daily execution**: 3:00 PM WAT (2:00 PM UTC)
+- **Execution time**: ~37 seconds end-to-end
+- **Quality**: 50% GOOD, 50% INCOMPLETE (normal for NGX)
+- **Webserver**: http://localhost:8080
+
+### 📈 Data Accumulation Timeline
+- **Days 1-20**: Price collection (building history)
+- **Days 21-30**: Technical indicators activate
+- **Days 31+**: Full advisory with recommendations
+- **Month 2-3**: Rich data for backtesting
 
 ---
 
-## 📦 **Pipeline Architecture**
-
-### ETL Workflow:
+## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     DATA INGESTION                              │
-├─────────────────────────────────────────────────────────────────┤
-│  NGX Source          │  Scrape african-markets.com             │
-│  Yahoo Finance       │  API calls for historical data          │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                   DATA VALIDATION                               │
-├─────────────────────────────────────────────────────────────────┤
-│  • Null checks       │  Required fields present                │
-│  • Price ranges      │  Values within bounds                   │
-│  • OHLC consistency  │  High ≥ Low, etc.                       │
-│  • Duplicate detect  │  No duplicate stock+date                │
-│  • Quality flags     │  GOOD / SUSPICIOUS / MISSING            │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                  DATA TRANSFORMATION                            │
-├─────────────────────────────────────────────────────────────────┤
-│  • Standardize codes │  Uppercase, trim whitespace             │
-│  • Clean names       │  Title case, normalize                  │
-│  • Calculate changes │  Daily %, YTD %                         │
-│  • Fill missing      │  Forward/backward fill                  │
-│  • Add metadata      │  Source, timestamp, completeness        │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                    DATA STORAGE                                 │
-├─────────────────────────────────────────────────────────────────┤
-│  dim_sectors         │  9 Nigerian market sectors              │
-│  dim_stocks          │  156+ stock master data                 │
-│  fact_daily_prices   │  Time-series OHLCV data                 │
-│  fact_indicators     │  Calculated technical metrics           │
-│  alert_rules         │  8 pre-configured alert conditions      │
-│  alert_history       │  Triggered alerts with resolution       │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│               TECHNICAL ANALYSIS                                │
-├─────────────────────────────────────────────────────────────────┤
-│  • Moving Averages   │  SMA 20/50 with crossover detection    │
-│  • RSI               │  14-day momentum oscillator             │
-│  • MACD              │  Trend following indicator              │
-│  • Bollinger Bands   │  Volatility bands                       │
-│  • Volatility        │  30-day annualized                      │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                  ALERT EVALUATION                               │
-├─────────────────────────────────────────────────────────────────┤
-│  • Price movements   │  ±5% / ±10% thresholds                  │
-│  • MA crossovers     │  Golden/Death cross signals             │
-│  • RSI extremes      │  Oversold (<30) / Overbought (>70)      │
-│  • High volatility   │  >30% annualized                        │
-│  • Volume spikes     │  >2× average                            │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                    NOTIFICATIONS                                │
-├─────────────────────────────────────────────────────────────────┤
-│  • Email alerts      │  Daily digest + critical alerts         │
-│  • Slack integration │  Real-time notifications                │
-│  • Dashboard         │  Web-based visualization (future)       │
-└─────────────────────────────────────────────────────────────────┘
+NGX Scraper → Validation → PostgreSQL → Technical Analysis
+                                ↓
+                    Investment Advisory → Notifications
+                                ↓
+                         Email + Slack + CLI
+```
+
+**Tech Stack:**
+- Python 3.11, PostgreSQL 16, Airflow 2.10
+- Docker Compose orchestration
+- SQLAlchemy ORM, Pandas analysis
+- BeautifulSoup4 web scraping
+
+---
+
+## 📚 Documentation
+
+| Document | Description |
+|----------|-------------|
+| **[1. System Overview](./docs/1_SYSTEM_OVERVIEW.md)** | Business purpose, features, project structure |
+| **[2. Technical Architecture](./docs/2_TECHNICAL_ARCHITECTURE.md)** | Database schema, OOP design, data flow |
+| **[3. Deployment Guide](./docs/3_DEPLOYMENT_GUIDE.md)** | Docker setup, cloud deployment, CLI usage |
+| **[4. User Guide](./docs/4_USER_GUIDE.md)** | Notifications, advisory system, reports |
+
+---
+
+## 🎯 Key Features
+
+### 1. Data Collection
+✅ NGX scraping with retry logic  
+✅ Quality validation (GOOD/INCOMPLETE/POOR flags)  
+✅ Bulk upsert (idempotent, handles retries)  
+
+### 2. Technical Analysis *(Day 21+)*
+✅ SMA20, SMA50 with crossover detection  
+✅ RSI (14-day momentum)  
+✅ MACD (trend following)  
+✅ Volatility (30-day annualized)  
+
+### 3. Investment Advisory *(Day 21+)*
+✅ **5 signal types**: STRONG_BUY, BUY, HOLD, SELL, STRONG_SELL  
+✅ **Scores 0-100**: Technical, Momentum, Volatility, Trend  
+✅ **Risk assessment**: LOW, MEDIUM, HIGH  
+✅ **Target prices**: +10-15% for buys  
+✅ **Stop-loss levels**: -5-7% protection  
+
+### 4. Notifications
+✅ Email alerts (HTML + plain text)  
+✅ Slack webhook integration  
+✅ Daily digest summaries  
+✅ Severity-based routing  
+
+### 5. CLI Interface (30+ commands)
+```bash
+# Database inspection
+docker compose exec app python -m app.cli list-stocks
+docker compose exec app python -m app.cli check-data-quality
+
+# Manual operations
+docker compose exec app python -m app.cli run-pipeline
+docker compose exec app python -m app.cli top-picks --signal BUY --count 10
+
+# Reports
+docker compose exec app python -m app.cli generate-report --type weekly
+docker compose exec app python -m app.cli test-email
 ```
 
 ---
 
-## 🚀 **Technology Stack**
-
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **Language** | Python 3.12 | Core application logic |
-| **Database** | PostgreSQL 16 | Time-series data storage |
-| **ORM** | SQLAlchemy 2.0 | Database abstraction |
-| **Data Processing** | Pandas 2.1.4 | Data transformation & analysis |
-| **Web Scraping** | BeautifulSoup4 | NGX data extraction |
-| **API Client** | yfinance | Yahoo Finance integration |
-| **Scheduling** | Apache Airflow 2.8 | Workflow orchestration |
-| **Containerization** | Docker & Docker Compose | Deployment & portability |
-| **Version Control** | Git & GitHub | Code management |
-| **Testing** | pytest | Unit & integration tests |
-| **Logging** | Python logging + JSON | Structured logging |
-
----
-
-## 📁 **Project Structure**
+## 📁 Project Structure
 
 ```
 Stock_pipeline/
 ├── app/
-│   ├── config/              # Database & settings configuration
-│   ├── models/              # SQLAlchemy ORM models (6 tables)
-│   ├── repositories/        # Data access layer (5 repositories)
+│   ├── config/              # Settings, database connection
+│   ├── models/              # SQLAlchemy ORM (6 tables)
+│   ├── repositories/        # Data access layer
 │   ├── services/
-│   │   ├── data_sources/    # NGX & Yahoo Finance sources
+│   │   ├── data_sources/    # NGX scraper
 │   │   ├── processors/      # Validation & transformation
-│   │   ├── indicators/      # Technical indicator calculator
-│   │   └── alerts/          # Alert rule evaluator
-│   ├── pipelines/           # ETL orchestrator (7 stages)
-│   └── utils/               # Logging, exceptions, decorators
+│   │   ├── indicators/      # Technical analysis
+│   │   ├── alerts/          # Evaluation + notifications
+│   │   └── advisory/        # Investment recommendations
+│   ├── pipelines/           # ETL orchestrator
+│   └── cli.py               # 30+ CLI commands
 ├── airflow/
-│   ├── dags/                # Airflow DAG definitions
-│   ├── logs/                # Airflow execution logs
-│   └── plugins/             # Custom Airflow plugins
-├── tests/
-│   ├── unit/                # Unit tests for components
-│   └── integration/         # End-to-end pipeline tests
-├── data/
-│   ├── raw/                 # Raw ingested data (CSV)
-│   └── processed/           # Processed data for loading
-├── reports/                 # Generated investment reports
-├── logs/                    # Application logs
-├── archive/                 # Historical scripts & data
-├── docker-compose.yml       # Multi-container orchestration
-├── .env.example             # Environment variables template
-└── README.md               # This file
+│   └── dags/                # Daily pipeline DAG
+├── docs/                    # Comprehensive documentation
+├── tests/                   # Unit & integration tests
+└── docker-compose.yml       # 5-container orchestration
 ```
 
 ---
 
-## 🎯 **Current Status: 70% MVP Complete**
+## 🔑 Services
 
-### ✅ **Completed Components**:
-1. **Foundation Layer** (100%)
-   - Database configuration with connection pooling
-   - Settings management with environment variables
-   - Comprehensive logging with structured JSON
-   - Custom exception hierarchy
-
-2. **Data Models** (100%)
-   - 6 SQLAlchemy ORM models
-   - Relationships and constraints
-   - Indexes for query optimization
-
-3. **Repository Layer** (100%)
-   - BaseRepository with common operations
-   - StockRepository (156+ stocks)
-   - PriceRepository (time-series data)
-   - IndicatorRepository (technical metrics)
-   - AlertRepository (rules & history)
-
-4. **Data Sources** (100%)
-   - NGXDataSource with web scraping
-   - YahooDataSource with API integration
-   - 156 NGX stocks + 2 LSE stocks configured
-
-5. **Data Processors** (100%)
-   - DataValidator with 6 validation checks
-   - DataTransformer with standardization & cleaning
-   - Quality flags and error reporting
-
-6. **Technical Indicators** (100%)
-   - IndicatorCalculator with 6 indicator types
-   - Vectorized pandas calculations
-   - Batch processing support
-
-7. **Alert Engine** (100%)
-   - AlertEvaluator with 5 rule type handlers
-   - Deduplication logic
-   - Severity levels and metadata tracking
-
-8. **Pipeline Orchestrator** (100%)
-   - 7-stage ETL workflow
-   - Configurable execution
-   - Error handling and metrics
-   - Batch processing with transactions
-
-### 🔨 **In Progress (30%)**:
-9. **Airflow Integration** (Next)
-   - DAG definition for daily 3PM WAT schedule
-   - Task dependencies and retries
-   - Monitoring and alerting
-
-10. **Integration Tests** (Next)
-    - End-to-end pipeline validation
-    - Data quality checks
-    - Performance benchmarks
-
-11. **CLI Interface** (Next)
-    - Manual pipeline execution
-    - Data inspection commands
-    - Configuration management
-
-12. **Dashboard/Reporting** (Future Phase)
-    - Web-based visualization
-    - Interactive charts
-    - Portfolio analytics
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| **Airflow UI** | http://localhost:8080 | admin / admin |
+| **PgAdmin** | http://localhost:5050 | admin@stockpipeline.com / admin |
+| **PostgreSQL** | localhost:5432 | stockuser / changeme |
 
 ---
 
-## 🚦 **Getting Started**
+## 💻 System Requirements
 
-### Prerequisites:
-- Docker & Docker Compose installed
-- Git for version control
-- Python 3.12+ (for local development)
+**Local Docker:**
+- 4GB RAM minimum
+- 10GB disk space
+- Docker 20.10+ & Docker Compose 2.0+
 
-### Quick Start:
+**Cloud Server (for 24/7 operation):**
+- DigitalOcean Droplet: $12/month (2GB RAM, 1 vCPU, 50GB SSD)
+- AWS EC2 t3.small: $10-20/month
+- AWS Lightsail: $5-10/month
 
+---
+
+## � Business Value
+
+**For Investors:**
+- ✅ Early opportunity detection before manual analysis
+- ✅ Risk management with volatility monitoring
+- ✅ Time savings (automated analysis of 154 stocks)
+- ✅ Data-driven decisions backed by technical signals
+- ✅ Comprehensive coverage of all NGX sectors
+
+**Technical Excellence:**
+- ✅ Production-ready (100% validated)
+- ✅ Scalable (PostgreSQL star schema, 500+ stock capacity)
+- ✅ Maintainable (Clean OOP, comprehensive docs)
+- ✅ Portable (Docker Compose deployment)
+- ✅ Cloud-ready (Deploy in 30 minutes)
+
+---
+
+## 🗂️ Database Schema
+
+**Star Schema** design with 6 tables:
+- `dim_sectors` - 12 NGX sectors
+- `dim_stocks` - 154 active stocks
+- `fact_daily_prices` - Time-series (close_price, 1D%, YTD%, market_cap)
+- `fact_technical_indicators` - SMA, RSI, MACD, Volatility
+- `alert_history` - Investment signals and notifications
+
+**Quality Flags:** GOOD, INCOMPLETE, POOR, SUSPICIOUS, MISSING, STALE
+
+See **[Technical Architecture](./docs/2_TECHNICAL_ARCHITECTURE.md)** for detailed schema.
+
+---
+
+## 🔄 Daily Pipeline (8 Stages)
+
+```
+1. Fetch NGX Data        (~15s) - Scrape african-markets.com
+2. Validate Data         (~2s)  - Quality checks & flags
+3. Transform Data        (~3s)  - Clean & standardize
+4. Load Stocks          (~2s)  - Upsert dim_stocks
+5. Load Prices          (~10s) - Bulk upsert (154 prices)
+6. Calculate Indicators (~3s)  - SMA, RSI, MACD (day 21+)
+7. Evaluate Alerts      (~2s)  - Check conditions (day 21+)
+8. Generate Recommendations (~2s) - BUY/SELL/HOLD (day 21+)
+
+Total: ~37 seconds
+```
+
+**Execution:** Daily at 3:00 PM WAT (after NGX market close)
+
+---
+
+## 📧 Notifications
+
+### Email Setup (Gmail)
 ```bash
-# 1. Clone repository
-git clone https://github.com/Akin-ctrl/Stock_pipeline.git
-cd Stock_pipeline
+# 1. Get Gmail app password
+# Visit: https://myaccount.google.com/security → 2-Step → App passwords
 
-# 2. Set up environment variables
-cp .env.example .env
-# Edit .env with your configurations
+# 2. Configure .env
+NOTIFICATION_EMAIL_ENABLED=true
+SMTP_USER=your_email@gmail.com
+SMTP_PASSWORD=your_16_char_app_password
+NOTIFICATION_EMAILS=recipient@example.com
 
-# 3. Start services
-docker-compose up -d
+# 3. Test
+docker compose exec app python -m app.cli test-email
+```
 
-# 4. Initialize database
-docker-compose exec app python -m app.scripts.init_db
+### Slack Setup
+```bash
+# 1. Create webhook: https://api.slack.com/messaging/webhooks
+# 2. Configure .env
+NOTIFICATION_SLACK_ENABLED=true
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
 
-# 5. Run pipeline manually (testing)
-docker-compose exec app python -m app.pipelines.orchestrator
+# 3. Test
+docker compose exec app python -m app.cli test-slack
+```
 
-# 6. View logs
-docker-compose logs -f app
+**See [User Guide](./docs/4_USER_GUIDE.md) for detailed setup.**
+
+---
+
+## 🤖 Investment Advisory (Day 21+)
+
+**Signals Generated:**
+- 🚀 **STRONG_BUY** - Multiple bullish indicators, +15% target
+- 📈 **BUY** - Bullish signals, +10% target
+- ⏸️ **HOLD** - Mixed/neutral signals
+- 📉 **SELL** - Bearish indicators
+- ⚠️ **STRONG_SELL** - Multiple bearish indicators
+
+**Scoring (0-100):**
+- Technical (30%): RSI, MACD analysis
+- Momentum (25%): Price vs moving averages
+- Volatility (20%): Price stability
+- Trend (15%): Golden/Death cross
+- Volume (10%): Confirmation signals
+
+**Example:**
+```bash
+docker compose exec app python -m app.cli top-picks --signal BUY --count 5
+
+# Output:
+# 1. MTNN - STRONG_BUY
+#    Score: 82.5 (EXCELLENT), Confidence: 87%
+#    Target: ₦269.68 (+15%), Stop Loss: ₦221.78 (-5%)
+#    Risk: LOW
 ```
 
 ---
 
-## 📊 **Sample Outputs**
+## 📊 Sample Outputs
 
-### Daily Alert Example:
+### Daily Pipeline Log
 ```
-🚨 Nigerian Stock Alert - December 7, 2025
+2025-12-31 15:00:00 - Pipeline started (execution_date=2025-12-31)
+2025-12-31 15:00:15 - Fetched 154 stocks from NGX
+2025-12-31 15:00:17 - Validated: 77 GOOD, 77 INCOMPLETE
+2025-12-31 15:00:20 - Transformed and cleaned data
+2025-12-31 15:00:22 - Loaded 154 stocks (0 new, 154 updated)
+2025-12-31 15:00:32 - Bulk loaded 154 prices (4 batches)
+2025-12-31 15:00:33 - Indicators skipped (requires 20+ days)
+2025-12-31 15:00:34 - Alerts skipped (no indicators yet)
+2025-12-31 15:00:35 - Recommendations skipped (no indicators yet)
+2025-12-31 15:00:37 - Pipeline completed successfully
+                     Execution time: 37 seconds
+```
 
-CRITICAL ALERTS:
-• DANGCEM: +12.4% daily move - significant volatility detected
-• MTNN: Volume spike 3.2× average - unusual trading activity
+### Email Alert (Day 21+)
+```
+Subject: 🚨 CRITICAL: DANGCEM Price Spike
 
-WARNINGS:
-• ZENITHBANK: Death Cross detected (MA20 crossed below MA50)
-• BUACEMENT: RSI at 73.5 - overbought territory
+DANGCEM (Dangote Cement PLC)
+Price: ₦1,234.56
+Change: +12.4% (1D)
+YTD: +240.5%
+Market Cap: 2.1T
 
-INFO:
-• AIRTELAFRI: Golden Cross confirmed - bullish signal
-• NESTLE: RSI at 28.2 - potential buy opportunity
+Alert: Daily price movement exceeds 10%
+Severity: CRITICAL
+Recommendation: Review position immediately
 
-Portfolio Summary:
-• Total alerts today: 6
-• Stocks monitored: 156
-• Data quality: 98.7% GOOD
-• Pipeline execution: 1.8 minutes
+---
+Generated: 2025-12-31 15:05:00 WAT
 ```
 
 ---
 
-## 📈 **Business Value**
+## 🛠️ Troubleshooting
 
-### Investment Benefits:
-- ✅ **Early opportunity detection**: Identify breakouts before the crowd
-- ✅ **Risk management**: Monitor volatility and market stress
-- ✅ **Time savings**: Automated daily analysis vs manual screening
-- ✅ **Data-driven decisions**: Technical signals backed by historical patterns
-- ✅ **Comprehensive coverage**: 156+ stocks across all NGX sectors
-- ✅ **Reliable alerts**: Deduplication prevents alert fatigue
+### Pipeline Failed
+```bash
+# 1. Check logs
+docker compose logs app | tail -100
 
-### Technical Benefits:
-- ✅ **Production-ready**: 70%+ test coverage, structured logging, error handling
-- ✅ **Scalable**: Handles 500+ stocks, 5+ years of data
-- ✅ **Maintainable**: Clean OOP architecture, comprehensive documentation
-- ✅ **Portable**: Docker deployment, environment-based configuration
-- ✅ **Extensible**: Plugin architecture for new indicators and data sources
+# 2. Verify database
+docker compose exec app python -m app.cli check-db
+
+# 3. Manual retry
+docker compose exec app python -m app.cli run-pipeline
+```
+
+### No Data Loaded
+```bash
+# Test NGX scraper
+docker compose exec app python -m app.cli sync-stocks
+
+# Check data quality
+docker compose exec app python -m app.cli check-data-quality
+```
+
+### Notifications Not Sending
+```bash
+# Test email
+docker compose exec app python -m app.cli test-email
+
+# Test Slack
+docker compose exec app python -m app.cli test-slack
+```
+
+**See [Deployment Guide](./docs/3_DEPLOYMENT_GUIDE.md) for more troubleshooting.**
 
 ---
 
-## 🤝 **Contributing**
+## 🚀 Next Steps
 
-This is a personal investment tool, but contributions are welcome:
-1. Fork the repository
-2. Create a feature branch
+### Days 1-20: Data Accumulation
+```bash
+# Monitor daily execution
+docker compose logs -f app
+
+# Check data quality
+docker compose exec app python -m app.cli check-data-quality
+```
+
+### Days 21+: Full System Active
+```bash
+# View top buy recommendations
+docker compose exec app python -m app.cli top-picks --signal BUY --count 10
+
+# Check recent alerts
+docker compose exec app python -m app.cli recent-alerts --days 7
+
+# Generate weekly report
+docker compose exec app python -m app.cli generate-report --type weekly
+```
+
+### Cloud Deployment (24/7 Operation)
+```bash
+# Transfer to DigitalOcean/AWS
+# See: docs/3_DEPLOYMENT_GUIDE.md
+
+# Benefits:
+# ✅ Runs without laptop on
+# ✅ 99.9% uptime
+# ✅ Remote access from anywhere
+# ✅ Professional infrastructure
+```
+
+---
+
+## 📞 Support & Contributing
+
+**Documentation:**
+- [System Overview](./docs/1_SYSTEM_OVERVIEW.md)
+- [Technical Architecture](./docs/2_TECHNICAL_ARCHITECTURE.md)
+- [Deployment Guide](./docs/3_DEPLOYMENT_GUIDE.md)
+- [User Guide](./docs/4_USER_GUIDE.md)
+
+**Issues:** [GitHub Issues](https://github.com/Akin-ctrl/Stock_pipeline/issues)
+
+**Contributing:**
+1. Fork repository
+2. Create feature branch
 3. Add comprehensive tests
-4. Submit pull request with detailed description
+4. Submit pull request
 
 ---
 
-## 📝 **License**
+## 📝 License
 
 Private project - All rights reserved
 
 ---
 
-## 📧 **Contact**
-
-For questions or issues, please open a GitHub issue or contact the repository owner.
-
----
-
-## 🙏 **Acknowledgments**
+## 🙏 Acknowledgments
 
 - Nigerian Stock Exchange for market data access
 - african-markets.com for real-time NGX prices
-- Yahoo Finance for historical data API
-- Open-source community for Python packages
+- Open-source Python community
 
 ---
 
-**Last Updated**: December 7, 2025  
-**Version**: 0.7.0 (MVP 70% Complete)  
-**Status**: Active Development
+**Last Updated**: December 31, 2025  
+**Version**: 1.0.0 (Production MVP)  
+**Status**: ✅ Production-Ready

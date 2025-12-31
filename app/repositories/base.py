@@ -62,7 +62,7 @@ class BaseRepository(Generic[T]):
             DatabaseError: If database operation fails
         """
         try:
-            return self.session.query(self.model).get(id_value)
+            return self.session.get(self.model, id_value)
         except SQLAlchemyError as e:
             self.logger.error(
                 f"Failed to get {self.model.__name__} by id",

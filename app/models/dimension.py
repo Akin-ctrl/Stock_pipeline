@@ -1,7 +1,6 @@
 """
 Dimension table models (master data).
-
-Follows reference.py principles:
+Features:
 - Type hints
 - Comprehensive docstrings
 - Business logic methods
@@ -110,7 +109,7 @@ class DimStock(Base, TimestampMixin):
     # Constraints
     __table_args__ = (
         CheckConstraint("exchange IN ('NGX', 'LSE')", name='chk_exchange'),
-        CheckConstraint("stock_code ~ '^[A-Z0-9_]+$'", name='chk_stock_code_format'),
+        CheckConstraint("stock_code ~ '^[A-Z0-9._]+$'", name='chk_stock_code_format'),
     )
     
     # Relationships
@@ -118,6 +117,7 @@ class DimStock(Base, TimestampMixin):
     prices = relationship("FactDailyPrice", back_populates="stock", cascade="all, delete-orphan")
     indicators = relationship("FactTechnicalIndicator", back_populates="stock", cascade="all, delete-orphan")
     alerts = relationship("AlertHistory", back_populates="stock", cascade="all, delete-orphan")
+    recommendations = relationship("FactRecommendation", back_populates="stock", cascade="all, delete-orphan")
     
     def __repr__(self) -> str:
         return (

@@ -1,7 +1,6 @@
 """
 Configuration management for the Stock Pipeline system.
-
-Follows reference.py principles:
+Features:
 - Type safety with dataclasses
 - Environment variable support
 - Validation
@@ -65,13 +64,11 @@ class DataSourceConfig:
     
     Attributes:
         ngx_url: URL for NGX stock data
-        yahoo_tickers: List of Yahoo Finance tickers
         request_timeout: HTTP request timeout (seconds)
         max_retries: Maximum retry attempts
         user_agent: HTTP User-Agent header
     """
     ngx_url: str
-    yahoo_tickers: List[str]
     request_timeout: int = 30
     max_retries: int = 5
     user_agent: str = (
@@ -100,6 +97,33 @@ class AlertConfig:
     volume_multiplier: float = 2.5
     rsi_oversold: float = 30.0
     rsi_overbought: float = 70.0
+
+
+@dataclass(frozen=True)
+class NotificationConfig:
+    """
+    Notification channel configuration.
+    
+    Attributes:
+        email_enabled: Enable email notifications
+        smtp_host: SMTP server host
+        smtp_port: SMTP server port
+        smtp_user: SMTP username
+        smtp_password: SMTP password
+        from_email: Sender email address
+        to_emails: List of recipient emails
+        slack_enabled: Enable Slack notifications
+        slack_webhook_url: Slack incoming webhook URL
+    """
+    email_enabled: bool = False
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: Optional[str] = None
+    smtp_password: Optional[str] = None
+    from_email: str = "alerts@stockpipeline.com"
+    to_emails: List[str] = field(default_factory=list)
+    slack_enabled: bool = False
+    slack_webhook_url: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -134,7 +158,12 @@ class PathConfig:
     def create_directories(self) -> None:
         """Create all configured directories if they don't exist."""
         for path in [self.data_raw, self.data_processed, self.logs, self.reports]:
-            path.mkdir(parents=True, exist_ok=True)
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+            except (PermissionError, OSError):
+                # Skip directory creation if permissions are insufficient
+                # This allows the app to run in restricted environments (e.g., Airflow)
+                pass
 
 
 @dataclass
@@ -153,6 +182,7 @@ class Settings:
     database: DatabaseConfig
     data_sources: DataSourceConfig
     alerts: AlertConfig
+    notifications: NotificationConfig
     paths: PathConfig
     environment: str = "development"
     debug: bool = False
@@ -202,12 +232,8 @@ class Settings:
             "https://www.african-markets.com/en/stock-markets/ngse/listed-companies"
         )
         
-        yahoo_tickers_str = os.getenv("YAHOO_TICKERS", "SEPL.L,GTCO.L")
-        yahoo_tickers = [t.strip() for t in yahoo_tickers_str.split(",")]
-        
         data_sources = DataSourceConfig(
             ngx_url=ngx_url,
-            yahoo_tickers=yahoo_tickers,
             request_timeout=int(os.getenv("REQUEST_TIMEOUT", "30")),
             max_retries=int(os.getenv("MAX_RETRIES", "5"))
         )
@@ -222,6 +248,22 @@ class Settings:
             rsi_overbought=float(os.getenv("ALERT_RSI_OVERBOUGHT", "70.0"))
         )
         
+        # Notification configuration
+        to_emails_str = os.getenv("NOTIFICATION_EMAILS", "")
+        to_emails = [e.strip() for e in to_emails_str.split(",") if e.strip()]
+        
+        notifications = NotificationConfig(
+            email_enabled=os.getenv("NOTIFICATION_EMAIL_ENABLED", "false").lower() == "true",
+            smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
+            smtp_port=int(os.getenv("SMTP_PORT", "587")),
+            smtp_user=os.getenv("SMTP_USER"),
+            smtp_password=os.getenv("SMTP_PASSWORD"),
+            from_email=os.getenv("NOTIFICATION_FROM_EMAIL", "alerts@stockpipeline.com"),
+            to_emails=to_emails,
+            slack_enabled=os.getenv("NOTIFICATION_SLACK_ENABLED", "false").lower() == "true",
+            slack_webhook_url=os.getenv("SLACK_WEBHOOK_URL")
+        )
+        
         # Path configuration
         project_root = Path(os.getenv("PROJECT_ROOT", "/home/Stock_pipeline"))
         paths = PathConfig.from_root(project_root)
@@ -234,6 +276,7 @@ class Settings:
             database=database,
             data_sources=data_sources,
             alerts=alerts,
+            notifications=notifications,
             paths=paths,
             environment=environment,
             debug=debug

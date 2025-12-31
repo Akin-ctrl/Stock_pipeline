@@ -182,6 +182,7 @@ class YahooDataSource(DataSource):
             hist['company_name'] = info['company_name']
             hist['sector'] = info['sector']
             hist['exchange'] = info['exchange']
+            hist['source'] = 'yf'  # Add source identifier
             
             # Select relevant columns
             columns = [
@@ -195,7 +196,8 @@ class YahooDataSource(DataSource):
                 'low_price',
                 'close_price',
                 'volume',
-                'change_1d_pct'
+                'change_1d_pct',
+                'source'
             ]
             
             hist = hist[columns]

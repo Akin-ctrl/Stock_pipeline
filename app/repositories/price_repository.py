@@ -143,27 +143,46 @@ class PriceRepository(BaseRepository[FactDailyPrice]):
     def bulk_insert_prices(self, price_data: List[Dict[str, Any]]) -> int:
         """
         Bulk insert price records from dictionary list.
+        Uses PostgreSQL INSERT ... ON CONFLICT DO UPDATE for upsert behavior.
         
         Args:
             price_data: List of dicts with price information
                 Required keys: stock_id, price_date, close_price, source
-                Optional: open_price, high_price, low_price, volume, etc.
+                Optional: change_1d_pct, change_ytd_pct, market_cap, etc.
                 
         Returns:
-            Number of records inserted
+            Number of records inserted/updated
         """
         if not price_data:
             return 0
         
-        instances = [FactDailyPrice(**data) for data in price_data]
-        self.bulk_insert(instances)
+        # Use SQLAlchemy's insert with on_conflict_do_update
+        from sqlalchemy.dialects.postgresql import insert
         
-        self.logger.info(
-            f"Bulk inserted {len(instances)} price records",
-            extra={"count": len(instances)}
+        stmt = insert(FactDailyPrice).values(price_data)
+        
+        # On conflict (stock_id, price_date), update all fields
+        stmt = stmt.on_conflict_do_update(
+            index_elements=['stock_id', 'price_date'],
+            set_={
+                'close_price': stmt.excluded.close_price,
+                'change_1d_pct': stmt.excluded.change_1d_pct,
+                'change_ytd_pct': stmt.excluded.change_ytd_pct,
+                'market_cap': stmt.excluded.market_cap,
+                'source': stmt.excluded.source,
+                'data_quality_flag': stmt.excluded.data_quality_flag,
+                'has_complete_data': stmt.excluded.has_complete_data,
+            }
         )
         
-        return len(instances)
+        self.session.execute(stmt)
+        
+        self.logger.info(
+            f"Bulk upserted {len(price_data)} price records",
+            extra={"count": len(price_data)}
+        )
+        
+        return len(price_data)
     
     def upsert_price(
         self,

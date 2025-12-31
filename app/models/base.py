@@ -1,7 +1,7 @@
 """
 SQLAlchemy declarative base and common utilities.
 
-Follows reference.py principles:
+Features:
 - Type safety
 - Clear abstractions
 - Reusable components

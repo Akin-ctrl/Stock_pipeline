@@ -75,6 +75,7 @@ class NGXDataSource(DataSource):
             # Add metadata
             df['exchange'] = 'NGX'
             df['price_date'] = date.today()
+            df['source'] = 'ngx'  # Add source identifier
             
             # Validate
             self.validate_dataframe(df)
@@ -212,16 +213,17 @@ class NGXDataSource(DataSource):
         Clean percentage strings and convert to float.
         
         Args:
-            series: Series with percentage strings (e.g., '+5.2%', '-3.1%', '-')
+            series: Series with percentage strings (e.g., '+5.2%', '-3.1%', '1,354.00%', '-')
             
         Returns:
-            Series with float values (5.2, -3.1, NaN)
+            Series with float values (5.2, -3.1, 1354.0, NaN)
         """
         return (
             series
             .astype(str)
             .str.replace('%', '', regex=False)
             .str.replace('+', '', regex=False)
+            .str.replace(',', '', regex=False)  # Remove commas from large numbers
             .str.strip()
             .replace(['-', '', 'None', 'nan'], None)  # Handle missing values
             .astype(float, errors='ignore')

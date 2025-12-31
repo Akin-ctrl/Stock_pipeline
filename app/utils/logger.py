@@ -62,11 +62,16 @@ class StructuredLogger:
             
             # File handler (optional)
             if log_file:
-                log_file.parent.mkdir(parents=True, exist_ok=True)
-                file_handler = logging.FileHandler(log_file)
-                file_handler.setLevel(level)
-                file_handler.setFormatter(self._get_formatter())
-                self._logger.addHandler(file_handler)
+                try:
+                    log_file.parent.mkdir(parents=True, exist_ok=True)
+                    file_handler = logging.FileHandler(log_file)
+                    file_handler.setLevel(level)
+                    file_handler.setFormatter(self._get_formatter())
+                    self._logger.addHandler(file_handler)
+                except (PermissionError, OSError):
+                    # Skip file logging if directory cannot be created
+                    # Console logging will still work
+                    pass
     
     def _get_formatter(self) -> logging.Formatter:
         """Create JSON formatter for structured logs."""
@@ -77,11 +82,35 @@ class StructuredLogger:
     
     def _enrich_metadata(self, extra: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Add correlation ID and timestamp to log metadata."""
+        from datetime import date, datetime as dt
+        from decimal import Decimal
         metadata = extra or {}
         if self._correlation_id:
             metadata["correlation_id"] = self._correlation_id
         metadata["timestamp_ms"] = datetime.now().timestamp() * 1000
-        return metadata
+        
+        # Convert dates and decimals to JSON-serializable format
+        serializable = {}
+        for key, value in metadata.items():
+            if isinstance(value, (date, dt)):
+                serializable[key] = value.isoformat()
+            elif isinstance(value, Decimal):
+                serializable[key] = float(value)
+            elif isinstance(value, dict):
+                # Recursively handle nested dicts
+                nested = {}
+                for k, v in value.items():
+                    if isinstance(v, (date, dt)):
+                        nested[k] = v.isoformat()
+                    elif isinstance(v, Decimal):
+                        nested[k] = float(v)
+                    else:
+                        nested[k] = v
+                serializable[key] = nested
+            else:
+                serializable[key] = value
+        
+        return serializable
     
     def debug(self, message: str, extra: Optional[Dict[str, Any]] = None) -> None:
         """Log debug message with optional metadata."""

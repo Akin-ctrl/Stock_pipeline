@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple
 from datetime import date, datetime, timedelta
 from dataclasses import dataclass
 import pandas as pd
+from sqlalchemy.orm import Session
 
 from app.models import AlertRule, AlertHistory
 from app.repositories import AlertRepository, StockRepository, PriceRepository, IndicatorRepository
@@ -45,10 +46,15 @@ class AlertEvaluator:
     - VOLUME_SPIKE: Unusual volume activity
     """
     
-    def __init__(self):
-        """Initialize evaluator with repositories."""
+    def __init__(self, session: Optional[Session] = None):
+        """
+        Initialize evaluator with repositories.
+        
+        Args:
+            session: Optional database session (for testing). If not provided, creates new session.
+        """
         self.logger = get_logger("alert_evaluator")
-        self.session = get_session()
+        self.session = session if session is not None else get_session()
         self.alert_repo = AlertRepository(self.session)
         self.stock_repo = StockRepository(self.session)
         self.price_repo = PriceRepository(self.session)

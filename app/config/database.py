@@ -1,7 +1,6 @@
 """
 Database connection and session management.
-
-Follows reference.py principles:
+Features:
 - Clean interface
 - Resource management
 - Type safety

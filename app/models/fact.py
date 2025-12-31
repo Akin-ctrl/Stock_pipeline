@@ -1,7 +1,6 @@
 """
 Fact table models (transactional/time-series data).
-
-Follows reference.py principles:
+Features:
 - Type hints
 - Data validation
 - Business logic methods
@@ -25,31 +24,30 @@ class FactDailyPrice(Base, TimestampMixin):
     """
     Daily stock price fact table (time-series).
     
-    Stores OHLCV (Open, High, Low, Close, Volume) data for each stock per day.
+    Stores daily closing price and derived metrics for each stock.
+    Optimized for NGX data which provides close price, daily/YTD changes, and market cap.
     
     Attributes:
         price_id: Primary key
         stock_id: Foreign key to dim_stocks
         price_date: Trading date
-        open_price: Opening price
-        high_price: Highest price
-        low_price: Lowest price
         close_price: Closing price (required)
-        volume: Trading volume
         change_1d_pct: Daily percentage change
         change_ytd_pct: Year-to-date percentage change
-        market_cap: Market capitalization as string
-        source: Data source identifier
-        data_quality_flag: Quality indicator ('GOOD', 'SUSPICIOUS', 'MISSING', 'STALE')
-        has_complete_data: Whether all OHLCV fields are present
+        market_cap: Market capitalization as string (billions NGN)
+        source: Data source identifier (ngx, yf)
+        data_quality_flag: Quality indicator ('GOOD', 'INCOMPLETE', 'SUSPICIOUS', 'MISSING', 'STALE', 'POOR')
+        has_complete_data: Whether all expected fields are present
         ingestion_timestamp: When data was ingested
     
     Example:
         >>> price = FactDailyPrice(
         >>>     stock_id=1,
-        >>>     price_date=date(2025, 12, 6),
+        >>>     price_date=date(2025, 12, 30),
         >>>     close_price=Decimal('35.50'),
-        >>>     volume=1500000
+        >>>     change_1d_pct=Decimal('2.5'),
+        >>>     change_ytd_pct=Decimal('15.3'),
+        >>>     market_cap='450.5'
         >>> )
     """
     __tablename__ = 'fact_daily_prices'
@@ -58,14 +56,10 @@ class FactDailyPrice(Base, TimestampMixin):
     stock_id = Column(Integer, ForeignKey('dim_stocks.stock_id', ondelete='CASCADE'), nullable=False)
     price_date = Column(Date, nullable=False, index=True)
     
-    # OHLCV Data
-    open_price = Column(Numeric(18, 4))
-    high_price = Column(Numeric(18, 4))
-    low_price = Column(Numeric(18, 4))
+    # Price Data (NGX provides only close price)
     close_price = Column(Numeric(18, 4), nullable=False)
-    volume = Column(BIGINT)
     
-    # Calculated Fields
+    # Calculated Fields (from source)
     change_1d_pct = Column(Numeric(10, 4))
     change_ytd_pct = Column(Numeric(10, 4))
     market_cap = Column(String(50))
@@ -80,12 +74,7 @@ class FactDailyPrice(Base, TimestampMixin):
     __table_args__ = (
         CheckConstraint('close_price > 0', name='chk_price_positive'),
         CheckConstraint(
-            "high_price IS NULL OR low_price IS NULL OR "
-            "(high_price >= low_price AND high_price >= close_price AND low_price <= close_price)",
-            name='chk_ohlc_logic'
-        ),
-        CheckConstraint(
-            "data_quality_flag IN ('GOOD', 'SUSPICIOUS', 'MISSING', 'STALE')",
+            "data_quality_flag IN ('GOOD', 'INCOMPLETE', 'SUSPICIOUS', 'MISSING', 'STALE', 'POOR')",
             name='chk_data_quality'
         ),
         Index('idx_stock_date', 'stock_id', 'price_date', unique=True),
@@ -264,3 +253,165 @@ class FactTechnicalIndicator(Base, TimestampMixin):
             return 'SELL'
         else:
             return 'STRONG_SELL'
+
+
+class FactRecommendation(Base, TimestampMixin):
+    """
+    Investment recommendation fact table.
+    
+    Stores AI-generated stock recommendations with confidence scores,
+    target prices, and reasoning.
+    
+    Attributes:
+        recommendation_id: Primary key
+        stock_id: Foreign key to dim_stocks
+        recommendation_date: Date of recommendation
+        signal_type: Trading signal (STRONG_BUY, BUY, HOLD, SELL, STRONG_SELL)
+        confidence_score: Confidence percentage (0-100)
+        overall_score: Overall stock score (0-100)
+        score_category: Score category (EXCELLENT, GOOD, FAIR, POOR, VERY_POOR)
+        current_price: Stock price at recommendation time
+        target_price: Estimated target price
+        stop_loss: Recommended stop-loss price
+        potential_return_pct: Expected return percentage
+        risk_level: Risk assessment (LOW, MEDIUM, HIGH)
+        recommendation_reason: Primary recommendation reason
+        technical_score: Technical analysis score (0-100)
+        momentum_score: Momentum score (0-100)
+        volatility_score: Volatility score (0-100)
+        trend_score: Trend score (0-100)
+        volume_score: Volume score (0-100)
+        rsi_value: RSI value at recommendation time
+        macd_value: MACD value at recommendation time
+        is_active: Whether recommendation is still active
+        outcome: Actual outcome (HIT_TARGET, HIT_STOP_LOSS, ONGOING, EXPIRED)
+        outcome_date: Date outcome was determined
+        actual_return_pct: Actual return if closed
+    
+    Indexes:
+        - (stock_id, recommendation_date) - for historical lookup
+        - (recommendation_date) - for date range queries
+        - (signal_type) - for filtering by recommendation type
+        - (is_active) - for active recommendations
+    """
+    __tablename__ = 'fact_recommendations'
+    
+    recommendation_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    stock_id = Column(Integer, ForeignKey('dim_stocks.stock_id'), nullable=False)
+    recommendation_date = Column(Date, nullable=False, index=True)
+    
+    # Signal and scoring
+    signal_type = Column(
+        String(20),
+        nullable=False,
+        index=True,
+        comment="Trading signal: STRONG_BUY, BUY, HOLD, SELL, STRONG_SELL"
+    )
+    confidence_score = Column(
+        Numeric(5, 2),
+        nullable=False,
+        comment="Confidence percentage (0-100)"
+    )
+    overall_score = Column(
+        Numeric(5, 2),
+        nullable=False,
+        comment="Overall stock score (0-100)"
+    )
+    score_category = Column(
+        String(20),
+        nullable=False,
+        comment="EXCELLENT, GOOD, FAIR, POOR, VERY_POOR"
+    )
+    
+    # Price targets
+    current_price = Column(Numeric(12, 2), nullable=False)
+    target_price = Column(Numeric(12, 2), nullable=True)
+    stop_loss = Column(Numeric(12, 2), nullable=True)
+    potential_return_pct = Column(Numeric(7, 2), nullable=True)
+    
+    # Risk and reasoning
+    risk_level = Column(
+        String(10),
+        nullable=False,
+        comment="LOW, MEDIUM, HIGH"
+    )
+    recommendation_reason = Column(Text, nullable=True)
+    
+    # Score breakdown
+    technical_score = Column(Numeric(5, 2), nullable=True)
+    momentum_score = Column(Numeric(5, 2), nullable=True)
+    volatility_score = Column(Numeric(5, 2), nullable=True)
+    trend_score = Column(Numeric(5, 2), nullable=True)
+    volume_score = Column(Numeric(5, 2), nullable=True)
+    
+    # Indicator values at time of recommendation
+    rsi_value = Column(Numeric(5, 2), nullable=True)
+    macd_value = Column(Numeric(10, 4), nullable=True)
+    
+    # Outcome tracking
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    outcome = Column(
+        String(20),
+        nullable=True,
+        comment="HIT_TARGET, HIT_STOP_LOSS, ONGOING, EXPIRED"
+    )
+    outcome_date = Column(Date, nullable=True)
+    actual_return_pct = Column(Numeric(7, 2), nullable=True)
+    
+    # Relationships
+    stock = relationship("DimStock", back_populates="recommendations")
+    
+    # Constraints
+    __table_args__ = (
+        CheckConstraint(
+            "signal_type IN ('STRONG_BUY', 'BUY', 'HOLD', 'SELL', 'STRONG_SELL')",
+            name='chk_signal_type'
+        ),
+        CheckConstraint(
+            "risk_level IN ('LOW', 'MEDIUM', 'HIGH')",
+            name='chk_risk_level'
+        ),
+        CheckConstraint(
+            'confidence_score >= 0 AND confidence_score <= 100',
+            name='chk_confidence_score'
+        ),
+        CheckConstraint(
+            'overall_score >= 0 AND overall_score <= 100',
+            name='chk_overall_score'
+        ),
+        Index('ix_recommendation_stock_date', 'stock_id', 'recommendation_date'),
+    )
+    
+    def __repr__(self) -> str:
+        """String representation."""
+        return (
+            f"<FactRecommendation(id={self.recommendation_id}, "
+            f"stock_id={self.stock_id}, date={self.recommendation_date}, "
+            f"signal={self.signal_type}, score={self.overall_score})>"
+        )
+    
+    def is_buy_signal(self) -> bool:
+        """Check if recommendation is a buy signal."""
+        return self.signal_type in ('BUY', 'STRONG_BUY')
+    
+    def is_sell_signal(self) -> bool:
+        """Check if recommendation is a sell signal."""
+        return self.signal_type in ('SELL', 'STRONG_SELL')
+    
+    def get_days_active(self) -> Optional[int]:
+        """Get number of days recommendation has been active."""
+        if not self.is_active or self.outcome_date is None:
+            return None
+        return (self.outcome_date - self.recommendation_date).days
+    
+    def calculate_actual_return(self, current_price: Decimal) -> Decimal:
+        """
+        Calculate actual return based on current price.
+        
+        Args:
+            current_price: Current stock price
+            
+        Returns:
+            Return percentage
+        """
+        return ((current_price - self.current_price) / self.current_price) * 100
