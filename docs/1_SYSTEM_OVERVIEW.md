@@ -58,17 +58,17 @@ Automated stock pipeline for **Nigerian equity growth investors** that:
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
 │              TECHNICAL ANALYSIS (20+ days)                  │
-│  Moving Averages: SMA20, SMA50 with crossover detection   │
-│  RSI: 14-day momentum (oversold/overbought)                │
-│  MACD: Trend following indicator                           │
-│  Volatility: 30-day annualized risk metric                 │
+│  Moving Averages: SMA20, SMA50 with crossover detection     │
+│  RSI: 14-day momentum (oversold/overbought)                 │
+│  MACD: Trend following indicator                            │
+│  Volatility: 30-day annualized risk metric                  │
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
 │            INVESTMENT ADVISORY (Indicators ready)           │
-│  Signals: STRONG_BUY | BUY | HOLD | SELL | STRONG_SELL    │
-│  Scores: 0-100 (Technical, Momentum, Volatility, Trend)   │
-│  Risk: LOW | MEDIUM | HIGH with stop-loss levels          │
+│  Signals: STRONG_BUY | BUY | HOLD | SELL | STRONG_SELL      │
+│  Scores: 0-100 (Technical, Momentum, Volatility, Trend)     │
+│  Risk: LOW | MEDIUM | HIGH with stop-loss levels            │
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
