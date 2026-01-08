@@ -171,11 +171,9 @@ Stock_pipeline/
 - 10GB disk space
 - Docker 20.10+ & Docker Compose 2.0+
 
-
-
 ---
 
-## � Business Value
+## Business Value
 
 **For Investors:**
 - ✅ Early opportunity detection before manual analysis
@@ -193,7 +191,7 @@ Stock_pipeline/
 
 ---
 
-## 🗂️ Database Schema
+## Database Schema
 
 **Star Schema** design with 6 tables:
 - `dim_sectors` - 12 NGX sectors
@@ -208,7 +206,7 @@ See **[Technical Architecture](./docs/2_TECHNICAL_ARCHITECTURE.md)** for detaile
 
 ---
 
-## 🔄 Daily Pipeline (8 Stages)
+## Daily Pipeline (8 Stages)
 
 ```
 1. Fetch NGX Data        (~15s) - Scrape african-markets.com

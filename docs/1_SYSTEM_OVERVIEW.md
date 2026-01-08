@@ -1,10 +1,10 @@
-# 📊 Nigerian Stock Pipeline - System Overview
+# Nigerian Stock Pipeline - System Overview
 
 > **Production-Ready MVP** | Daily automated Nigerian Stock Exchange (NGX) data collection, analysis, and investment advisory system.
 
 ---
 
-## 🎯 Purpose
+## Purpose
 
 Automated stock pipeline for **Nigerian equity growth investors** that:
 - Monitors **154 NGX stocks** daily from african-markets.com
@@ -15,7 +15,7 @@ Automated stock pipeline for **Nigerian equity growth investors** that:
 
 ---
 
-## 📈 Business Value
+## Business Value
 
 ### For Investors:
 ✅ **Early opportunity detection** - Identify breakouts before manual analysis  
@@ -33,27 +33,27 @@ Automated stock pipeline for **Nigerian equity growth investors** that:
 
 ---
 
-## 🏗️ System Architecture
+## System Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    DATA COLLECTION                          │
-│  NGX Source: african-markets.com (154 stocks)              │
-│  Fields: Close Price, 1D%, YTD%, Market Cap                │
+│  NGX Source: african-markets.com (154 stocks)               │
+│  Fields: Close Price, 1D%, YTD%, Market Cap                 │
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
 │                   DATA VALIDATION                           │
-│  Quality Flags: GOOD | INCOMPLETE | POOR | SUSPICIOUS      │
-│  Checks: Required fields, price ranges, duplicates         │
+│  Quality Flags: GOOD | INCOMPLETE | POOR | SUSPICIOUS       │
+│  Checks: Required fields, price ranges, duplicates          │
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
 │                  DATA STORAGE (PostgreSQL)                  │
-│  dim_stocks: 154 stocks across 12 sectors                  │
-│  fact_daily_prices: Time-series with quality flags         │
-│  fact_technical_indicators: MA, RSI, MACD, Volatility      │
-│  alert_history: Investment signals and notifications       │
+│  dim_stocks: 154 stocks across 12 sectors                   │
+│  fact_daily_prices: Time-series with quality flags          │
+│  fact_technical_indicators: MA, RSI, MACD, Volatility       │
+│  alert_history: Investment signals and notifications        │
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -73,15 +73,15 @@ Automated stock pipeline for **Nigerian equity growth investors** that:
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
 │                    NOTIFICATIONS                            │
-│  Email: Daily digest + critical alerts                     │
-│  Slack: Real-time investment signals                       │
-│  CLI: Manual queries and reports                           │
+│  Email: Daily digest + critical alerts                      │
+│  Slack: Real-time investment signals                        │
+│  CLI: Manual queries and reports                            │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🚀 Technology Stack
+## Technology Stack
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
@@ -96,9 +96,9 @@ Automated stock pipeline for **Nigerian equity growth investors** that:
 
 ---
 
-## 📊 Current Production Status
+## Current Production Status
 
-### ✅ **LIVE & OPERATIONAL**
+### **LIVE & OPERATIONAL**
 - **154 stocks** loaded from NGX (12 sectors)
 - **154 daily prices** captured (50% GOOD, 50% INCOMPLETE quality)
 - **Daily execution**: 3:00 PM WAT (2:00 PM UTC) via Airflow
@@ -107,13 +107,13 @@ Automated stock pipeline for **Nigerian equity growth investors** that:
 - **Auto-restart**: All containers restart on failure
 - **Webserver**: http://localhost:8080 (Airflow UI)
 
-### 📈 **Data Accumulation Timeline**
+### **Data Accumulation Timeline**
 - **Days 1-20**: Price collection only (building history)
 - **Days 21-30**: Technical indicators activate (requires 20+ days)
 - **Days 31+**: Full advisory system (recommendations + alerts)
 - **Month 2-3**: Rich historical data for backtesting
 
-### 🎯 **NGX Data Coverage**
+### **NGX Data Coverage**
 ```
 Total Stocks: 154
 Source: african-markets.com
@@ -133,7 +133,7 @@ Quality Distribution:
 
 ---
 
-## 🗂️ Project Structure
+## Project Structure
 
 ```
 Stock_pipeline/
@@ -167,7 +167,7 @@ Stock_pipeline/
 
 ---
 
-## 🔑 Key Features
+## Key Features
 
 ### 1. **Data Collection**
 - NGX scraping with retry logic and error handling
@@ -210,9 +210,9 @@ Stock_pipeline/
 
 ---
 
-## 📍 Next Steps
+## Deployment
 
-### **Option 1: Continue Laptop-Based (Current State)**
+### **Option 1: Continue Laptop-Based**
 ```bash
 # Pipeline runs automatically daily at 3PM WAT
 # Access Airflow UI: http://localhost:8080
@@ -231,7 +231,7 @@ See [deployment guide](./3_DEPLOYMENT_GUIDE.md) for detailed steps.
 
 ---
 
-## 📚 Documentation Index
+## Documentation Index
 
 1. **[System Overview](./1_SYSTEM_OVERVIEW.md)** ← You are here
 2. **[Technical Architecture](./2_TECHNICAL_ARCHITECTURE.md)** - Database schema, OOP design, data flow
