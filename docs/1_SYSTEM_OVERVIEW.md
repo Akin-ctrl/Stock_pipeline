@@ -1,6 +1,6 @@
 # Nigerian Stock Pipeline - System Overview
 
-> **Production-Ready MVP** | Daily automated Nigerian Stock Exchange (NGX) data collection, analysis, and investment advisory system.
+> **Production-Ready MVP** | Daily automated Nigerian Stock Exchange (NGX) data collection, technical analysis, and stock screening system.
 
 ---
 
@@ -65,7 +65,7 @@ Automated stock pipeline for **Nigerian equity growth investors** that:
 └─────────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
-│            INVESTMENT ADVISORY (Indicators ready)           │
+│            STOCK SCREENING (Indicators ready)               │
 │  Signals: STRONG_BUY | BUY | HOLD | SELL | STRONG_SELL      │
 │  Scores: 0-100 (Technical, Momentum, Volatility, Trend)     │
 │  Risk: LOW | MEDIUM | HIGH with stop-loss levels            │
@@ -110,7 +110,7 @@ Automated stock pipeline for **Nigerian equity growth investors** that:
 ### **Data Accumulation Timeline**
 - **Days 1-20**: Price collection only (building history)
 - **Days 21-30**: Technical indicators activate (requires 20+ days)
-- **Days 31+**: Full advisory system (recommendations + alerts)
+- **Days 31+**: Full screening system (recommendations + alerts)
 - **Month 2-3**: Rich historical data for backtesting
 
 ### **NGX Data Coverage**
@@ -188,7 +188,7 @@ Stock_pipeline/
 - Volatility (30-day annualized)
 - Golden/Death Cross detection
 
-### 4. **Investment Advisory** *(Activates day 21+)*
+### 4. **Stock Screening & Signals** *(Activates day 21+)*
 - **5 signal types**: STRONG_BUY, BUY, HOLD, SELL, STRONG_SELL
 - **Score categories**: EXCELLENT (80-100), GOOD (60-79), FAIR (40-59)
 - **Risk assessment**: LOW/MEDIUM/HIGH

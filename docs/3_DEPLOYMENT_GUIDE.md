@@ -449,7 +449,7 @@ python -m app.cli alerts-by-severity CRITICAL
 python -m app.cli stock-alerts ZENITHBANK
 ```
 
-#### Advisory Commands *(Available day 21+)*
+#### Screening Commands *(Available day 21+)*
 ```bash
 # Generate recommendations
 python -m app.cli generate-recommendations

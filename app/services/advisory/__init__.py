@@ -1,7 +1,9 @@
 """
-Investment advisory services.
+Stock screening services.
 
-Generates stock recommendations based on technical analysis.
+Generates stock screening signals based on technical analysis.
+
+**DISCLAIMER**: For educational/analysis purposes only. Not investment advice.
 """
 
 from app.services.advisory.signals import (
@@ -11,7 +13,7 @@ from app.services.advisory.scoring import (
     StockScorer, StockScore, ScoreCategory
 )
 from app.services.advisory.advisor import (
-    InvestmentAdvisor, StockRecommendation
+    StockScreener, StockRecommendation
 )
 
 __all__ = [
@@ -21,6 +23,6 @@ __all__ = [
     'StockScorer',
     'StockScore',
     'ScoreCategory',
-    'InvestmentAdvisor',
+    'StockScreener',
     'StockRecommendation',
 ]

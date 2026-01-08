@@ -266,7 +266,7 @@ CREATE INDEX idx_stock_alerts ON alert_history(stock_id, alert_date DESC);
 │  ├── processors/    (validation, transformation)        │
 │  ├── indicators/    (technical analysis)                │
 │  ├── alerts/        (evaluation + notifications)        │
-│  └── advisory/      (recommendations)                   │
+│  └── screening/     (signals & scoring)                 │
 └─────────────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────┐
@@ -362,10 +362,10 @@ class IndicatorCalculator:
 
 **Implementation**: Vectorized pandas calculations for performance
 
-#### **InvestmentAdvisor** (app/services/advisory/advisor.py)
+#### **StockScreener** (app/services/advisory/advisor.py)
 ```python
-class InvestmentAdvisor:
-    """Generates BUY/SELL/HOLD recommendations"""
+class StockScreener:
+    """Generates stock screening signals (BUY/SELL/HOLD)"""
     
     def generate_recommendations(
         self,

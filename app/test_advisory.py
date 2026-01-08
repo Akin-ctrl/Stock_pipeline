@@ -1,7 +1,10 @@
 """
-Test script for investment advisory system.
+"""Test script for stock screening system.
 
-Tests recommendation generation and displays top stock picks.
+**DISCLAIMER**: This generates technical analysis signals for educational purposes.
+Not financial advice.
+
+Tests signal generation and displays top stock picks.
 """
 
 import sys
@@ -13,24 +16,24 @@ from decimal import Decimal
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app.config.database import get_db
-from app.services.advisory import InvestmentAdvisor, SignalType
+from app.services.advisory import StockScreener, SignalType
 from app.repositories import RecommendationRepository
 from app.utils import get_logger
 
 
 def test_advisory_system():
-    """Test investment advisory system."""
+    """Test stock screening system."""
     logger = get_logger("test_advisory")
     
     logger.info("=" * 80)
-    logger.info("INVESTMENT ADVISORY SYSTEM TEST")
+    logger.info("STOCK SCREENING SYSTEM TEST")
     logger.info("=" * 80)
     
     # Initialize database
     db = get_db()
     
     with db.get_session() as session:
-        advisor = InvestmentAdvisor(session)
+        screener = StockScreener(session)
         rec_repo = RecommendationRepository(session)
         
         try:
@@ -40,7 +43,7 @@ def test_advisory_system():
             
             # Generate recommendations
             today = date.today()
-            recommendations = advisor.generate_recommendations(
+            recommendations = screener.generate_recommendations(
                 recommendation_date=today,
                 min_score=40.0,
                 min_confidence=0.5
@@ -69,10 +72,10 @@ def test_advisory_system():
             
             # Get top buy picks
             logger.info("\n" + "=" * 80)
-            logger.info("TOP BUY RECOMMENDATIONS")
+            logger.info("TOP BUY SIGNALS")
             logger.info("=" * 80)
             
-            top_buys = advisor.get_top_picks(
+            top_buys = screener.get_top_picks(
                 recommendations,
                 signal_filter=SignalType.BUY,
                 top_n=5
@@ -173,7 +176,7 @@ def test_advisory_system():
                 for outcome, count in stats['outcomes'].items():
                     logger.info(f"    {outcome}: {count}")
             
-            advisor.close()
+            screener.close()
             
         except Exception as e:
             logger.error(f"Test failed: {str(e)}", exc_info=True)
@@ -194,55 +197,44 @@ def display_usage_examples():
     logger.info("USAGE EXAMPLES")
     logger.info("=" * 80)
     
-    logger.info("""
-# Generate recommendations manually
-from app.config.database import get_db
-from app.services.advisory import InvestmentAdvisor
-from datetime import date
-
-db = get_db()
-with db.get_session() as session:
-    advisor = InvestmentAdvisor(session)
-    
-    recommendations = advisor.generate_recommendations(
-        recommendation_date=date.today(),
-        min_score=60.0,  # Only high-scoring stocks
-        min_confidence=0.7  # High confidence only
-    )
-    
-    # Get top buy picks
-    top_buys = advisor.get_top_picks(
-        recommendations,
-        signal_filter=SignalType.BUY,
-        top_n=10
-    )
-    
-    for rec in top_buys:
-        print(advisor.format_recommendation(rec))
-
-# Query database for recommendations
-from app.repositories import RecommendationRepository
-
-with db.get_session() as session:
-    repo = RecommendationRepository(session)
-    
-    # Get today's recommendations
-    recs = repo.get_recommendations_by_date(date.today())
-    
-    # Get active buy recommendations
-    active_buys = repo.get_active_recommendations(signal_type='BUY')
-    
-    # Get top picks
-    top_picks = repo.get_top_picks(
-        recommendation_date=date.today(),
-        signal_type='BUY',
-        top_n=5
-    )
-    
-    # Get performance stats
-    stats = repo.get_performance_stats()
-    print(f"Win rate: {stats['win_rate_pct']:.1f}%")
-    """)
+    # Print usage examples as separate lines to avoid f-string parsing issues
+    logger.info("\n# Generate screening signals manually")
+    logger.info("from app.config.database import get_db")
+    logger.info("from app.services.advisory import StockScreener")
+    logger.info("from datetime import date\n")
+    logger.info("db = get_db()")
+    logger.info("with db.get_session() as session:")
+    logger.info("    screener = StockScreener(session)\n")
+    logger.info("    recommendations = screener.generate_recommendations(")
+    logger.info("        recommendation_date=date.today(),")
+    logger.info("        min_score=60.0,  # Only high-scoring stocks")
+    logger.info("        min_confidence=0.7  # High confidence only")
+    logger.info("    )\n")
+    logger.info("    # Get top buy picks")
+    logger.info("    top_buys = screener.get_top_picks(")
+    logger.info("        recommendations,")
+    logger.info("        signal_filter=SignalType.BUY,")
+    logger.info("        top_n=10")
+    logger.info("    )\n")
+    logger.info("    for rec in top_buys:")
+    logger.info("        print(screener.format_recommendation(rec))\n")
+    logger.info("# Query database for recommendations")
+    logger.info("from app.repositories import RecommendationRepository\n")
+    logger.info("with db.get_session() as session:")
+    logger.info("    repo = RecommendationRepository(session)\n")
+    logger.info("    # Get today's recommendations")
+    logger.info("    recs = repo.get_recommendations_by_date(date.today())\n")
+    logger.info("    # Get active buy recommendations")
+    logger.info("    active_buys = repo.get_active_recommendations(signal_type='BUY')\n")
+    logger.info("    # Get top picks")
+    logger.info("    top_picks = repo.get_top_picks(")
+    logger.info("        recommendation_date=date.today(),")
+    logger.info("        signal_type='BUY',")
+    logger.info("        top_n=5")
+    logger.info("    )\n")
+    logger.info("    # Get performance stats")
+    logger.info("    stats = repo.get_performance_stats()")
+    logger.info("    print(f\"Win rate: {stats['win_rate_pct']:.1f}%\")")
 
 
 if __name__ == "__main__":

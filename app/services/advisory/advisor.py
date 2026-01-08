@@ -1,8 +1,11 @@
 """
-Investment advisor service.
+Stock screening service.
 
-Generates actionable investment recommendations by combining
+Generates trading signals and stock scores by combining
 technical signals, stock scores, and risk analysis.
+
+**DISCLAIMER**: This is a technical analysis screening tool for educational purposes.
+Not financial advice. Always do your own research.
 """
 
 from dataclasses import dataclass
@@ -59,12 +62,14 @@ class StockRecommendation:
     stock_score: StockScore
 
 
-class InvestmentAdvisor:
+class StockScreener:
     """
-    Generates investment recommendations.
+    Generates stock screening signals and scores.
     
     Combines technical analysis, scoring, and risk assessment
-    to produce actionable buy/sell/hold recommendations.
+    to produce BUY/SELL/HOLD signals with confidence levels.
+    
+    **NOT INVESTMENT ADVICE** - For screening and analysis only.
     """
     
     def __init__(self, db_session):
@@ -75,7 +80,7 @@ class InvestmentAdvisor:
             db_session: Database session
         """
         self.db = db_session
-        self.logger = get_logger("investment_advisor")
+        self.logger = get_logger("stock_screener")
         
         self.signal_generator = SignalGenerator()
         self.stock_scorer = StockScorer()

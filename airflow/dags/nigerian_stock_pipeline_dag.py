@@ -6,7 +6,7 @@ stock market data from NGX web source. It runs daily at 3PM WAT
 (after market close at 2:30 PM WAT) to capture the day's trading data.
 
 Pipeline Stages:
-1. Fetch data from NGX web source and Yahoo Finance API
+1. Fetch data from NGX web source
 2. Validate data quality (nulls, ranges, OHLC consistency)
 3. Transform and standardize data
 4. Load stocks and prices to PostgreSQL

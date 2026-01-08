@@ -27,7 +27,7 @@ from app.repositories import (
     AlertRepository,
     RecommendationRepository
 )
-from app.services.advisory import InvestmentAdvisor
+from app.services.advisory import StockScreener
 from app.utils import get_logger
 
 logger = get_logger("cli")

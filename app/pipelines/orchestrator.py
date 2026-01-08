@@ -27,7 +27,7 @@ from app.services.data_sources import NGXDataSource
 from app.services.processors import DataValidator, DataTransformer
 from app.services.indicators import IndicatorCalculator
 from app.services.alerts import AlertEvaluator, AlertNotifier
-from app.services.advisory import InvestmentAdvisor
+from app.services.advisory import StockScreener
 from app.utils import get_logger
 from app.utils.exceptions import DataValidationError
 
@@ -795,15 +795,15 @@ class PipelineOrchestrator:
         """
         stage_start = datetime.now()
         
-        self.logger.info("Stage 8: Generating investment recommendations")
+        self.logger.info("Stage 8: Generating stock screening signals")
         
         try:
             with self.db.get_session() as session:
-                advisor = InvestmentAdvisor(session)
+                screener = StockScreener(session)
                 rec_repo = RecommendationRepository(session)
                 
                 # Generate recommendations
-                recommendations = advisor.generate_recommendations(
+                recommendations = screener.generate_recommendations(
                     recommendation_date=execution_date,
                     stock_codes=stock_codes,
                     min_score=40.0,  # Minimum acceptable score
@@ -815,7 +815,7 @@ class PipelineOrchestrator:
                     saved = rec_repo.create_recommendations_bulk(recommendations)
                     
                     self.logger.info(
-                        f"Generated {saved} investment recommendations",
+                        f"Generated {saved} screening signals",
                         extra={"recommendations": saved}
                     )
                     
@@ -826,7 +826,7 @@ class PipelineOrchestrator:
                     if buy_picks:
                         top_3 = buy_picks[:3]
                         self.logger.info(
-                            f"Top {len(top_3)} buy recommendations:",
+                            f"Top {len(top_3)} buy signals:",
                             extra={"top_picks": len(top_3)}
                         )
                         for i, rec in enumerate(top_3, 1):
@@ -837,10 +837,10 @@ class PipelineOrchestrator:
                                 f"Confidence: {rec.confidence*100:.0f}%"
                             )
                 else:
-                    self.logger.info("No recommendations generated (filters applied)")
+                    self.logger.info("No signals generated (filters applied)")
                     saved = 0
                 
-                advisor.close()
+                screener.close()
                 session.commit()
                 
                 self.stage_times['generate_recommendations'] = (

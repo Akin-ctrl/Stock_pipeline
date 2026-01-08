@@ -1,12 +1,12 @@
-# 📊 User Guide - Notifications, Advisory & Reports
+# 📊 User Guide - Notifications, Screening & Reports
 
-> How to use the notification system, investment advisory, and reporting features
+> How to use the notification system, stock screening, and reporting features
 
 ---
 
 ## 📋 Table of Contents
 1. [Notification System](#notification-system)
-2. [Investment Advisory](#investment-advisory)
+2. [Stock Screening & Signals](#stock-screening--signals)
 3. [Reports & Analysis](#reports--analysis)
 4. [Data Quality](#data-quality)
 
@@ -224,7 +224,7 @@ Each stock receives a **composite score (0-100)** across 5 dimensions:
 - ⭐⭐ **POOR** (20-39) - Weak stocks
 - ⭐ **VERY_POOR** (0-19) - Avoid
 
-### 2.4 Using the Advisory System
+### 2.4 Using the Screening System
 
 #### View Top Buy Recommendations
 ```bash
@@ -332,7 +332,7 @@ Target: ₦49.50 (+10%)
 Stop Loss: ₦42.75 (-5%)
 ```
 
-### 2.7 Advisory Workflow
+### 2.7 Screening Workflow
 
 ```
 Day 1-20: Data Accumulation

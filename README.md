@@ -1,6 +1,6 @@
 # Nigerian Stock Pipeline
 
-> **Production-Ready MVP** | Daily automated Nigerian Stock Exchange (NGX) data collection, analysis, and investment advisory system.
+> **Production-Ready MVP** | Daily automated Nigerian Stock Exchange (NGX) data collection, technical analysis, and stock screening system.
 
 [![Status](https://img.shields.io/badge/status-production-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.12-blue)]()
@@ -62,7 +62,7 @@ docker compose logs -f app
 ```
 NGX Scraper → Validation → PostgreSQL → Technical Analysis
                                 ↓
-                    Investment Advisory → Notifications
+                    Stock Screening → Notifications
                                 ↓
                          Email + Slack + CLI
 ```
@@ -99,7 +99,7 @@ NGX Scraper → Validation → PostgreSQL → Technical Analysis
 ✅ MACD (trend following)  
 ✅ Volatility (30-day annualized)  
 
-### 3. Investment Advisory *(Day 21+)*
+### 3. Stock Screening & Signals *(Day 21+)*
 ✅ **5 signal types**: STRONG_BUY, BUY, HOLD, SELL, STRONG_SELL  
 ✅ **Scores 0-100**: Technical, Momentum, Volatility, Trend  
 ✅ **Risk assessment**: LOW, MEDIUM, HIGH  
@@ -142,7 +142,7 @@ Stock_pipeline/
 │   │   ├── processors/      # Validation & transformation
 │   │   ├── indicators/      # Technical analysis
 │   │   ├── alerts/          # Evaluation + notifications
-│   │   └── advisory/        # Investment recommendations
+│   │   └── screening/       # Stock screening & signals
 │   ├── pipelines/           # ETL orchestrator
 │   └── cli.py               # 30+ CLI commands
 ├── airflow/
