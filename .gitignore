@@ -60,3 +60,8 @@ build/
 pip-wheel-metadata/
 .wheels/
 
+# ----------------------
+# Temporary notes
+# ----------------------
+append_later.txt
+
