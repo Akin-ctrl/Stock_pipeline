@@ -227,7 +227,7 @@ Total: ~37 seconds
 
 ---
 
-## 📧 Notifications
+## Notifications
 
 ### Email Setup (Gmail)
 ```bash
@@ -259,14 +259,14 @@ docker compose exec app python -m app.cli test-slack
 
 ---
 
-## 🤖 Investment Advisory (Day 21+)
+## Investment Advisory (Day 21+)
 
 **Signals Generated:**
-- 🚀 **STRONG_BUY** - Multiple bullish indicators, +15% target
-- 📈 **BUY** - Bullish signals, +10% target
-- ⏸️ **HOLD** - Mixed/neutral signals
-- 📉 **SELL** - Bearish indicators
-- ⚠️ **STRONG_SELL** - Multiple bearish indicators
+- **STRONG_BUY** - Multiple bullish indicators, +15% target
+- **BUY** - Bullish signals, +10% target
+- **HOLD** - Mixed/neutral signals
+- **SELL** - Bearish indicators
+- **STRONG_SELL** - Multiple bearish indicators
 
 **Scoring (0-100):**
 - Technical (30%): RSI, MACD analysis
@@ -288,7 +288,7 @@ docker compose exec app python -m app.cli top-picks --signal BUY --count 5
 
 ---
 
-## 📊 Sample Outputs
+## Sample Outputs
 
 ### Daily Pipeline Log
 ```
@@ -307,7 +307,7 @@ docker compose exec app python -m app.cli top-picks --signal BUY --count 5
 
 ### Email Alert (Day 21+)
 ```
-Subject: 🚨 CRITICAL: DANGCEM Price Spike
+Subject: CRITICAL: DANGCEM Price Spike
 
 DANGCEM (Dangote Cement PLC)
 Price: ₦1,234.56
@@ -320,12 +320,12 @@ Severity: CRITICAL
 Recommendation: Review position immediately
 
 ---
-Generated: 2025-12-31 15:05:00 WAT
+
 ```
 
 ---
 
-## 🛠️ Troubleshooting
+## Troubleshooting
 
 ### Pipeline Failed
 ```bash
@@ -361,7 +361,7 @@ docker compose exec app python -m app.cli test-slack
 
 ---
 
-## 🚀 Next Steps
+## Next Steps (currently ongoing)
 
 ### Days 1-20: Data Accumulation
 ```bash
@@ -398,7 +398,7 @@ docker compose exec app python -m app.cli generate-report --type weekly
 
 ---
 
-## 📞 Support & Contributing
+## Support & Contributing
 
 **Documentation:**
 - [System Overview](./docs/1_SYSTEM_OVERVIEW.md)
@@ -416,13 +416,13 @@ docker compose exec app python -m app.cli generate-report --type weekly
 
 ---
 
-## 📝 License
+## License
 
 Private project - All rights reserved
 
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - Nigerian Stock Exchange for market data access
 - african-markets.com for real-time NGX prices
