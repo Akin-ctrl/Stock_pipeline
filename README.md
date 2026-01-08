@@ -1,26 +1,26 @@
-# � Nigerian Stock Pipeline
+# Nigerian Stock Pipeline
 
 > **Production-Ready MVP** | Daily automated Nigerian Stock Exchange (NGX) data collection, analysis, and investment advisory system.
 
 [![Status](https://img.shields.io/badge/status-production-brightgreen)]()
-[![Python](https://img.shields.io/badge/python-3.11-blue)]()
+[![Python](https://img.shields.io/badge/python-3.12-blue)]()
 [![Docker](https://img.shields.io/badge/docker-ready-blue)]()
 [![License](https://img.shields.io/badge/license-private-red)]()
 
 ---
 
-## 🎯 What It Does
+## What It Does
 
-Automated **24/7 stock pipeline** for Nigerian equity investors:
-- 📈 **Monitors 154 NGX stocks** daily from african-markets.com
-- 🔍 **Calculates technical indicators** (MA, RSI, MACD, Volatility)
-- 🤖 **Generates investment recommendations** (BUY/SELL/HOLD signals)
-- 📧 **Sends real-time alerts** via Email/Slack
-- ⚡ **Runs autonomously** via Airflow scheduler (3:00 PM WAT)
+Automated 24/7 stock pipeline for Nigerian equity investors:
+- Monitors 154 NGX stocks daily from african-markets.com
+- Calculates technical indicators (MA, RSI, MACD, Volatility)
+- Generates investment recommendations (BUY/SELL/HOLD signals)
+- Sends real-time alerts via Email/Slack
+- Runs autonomously via Airflow scheduler (3:00 PM WAT)
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Local Docker Setup (5 minutes)
 
@@ -41,46 +41,23 @@ open http://localhost:8080
 # 4. Verify pipeline ran
 docker compose logs -f app
 ```
-
-### Cloud Deployment (30 minutes)
-
-Deploy to DigitalOcean/AWS for 24/7 operation:
-
-```bash
-# Transfer to cloud server
-tar -czf stock_pipeline.tar.gz Stock_pipeline/
-scp stock_pipeline.tar.gz root@<server-ip>:/root/
-
-# SSH and start
-ssh root@<server-ip>
-cd Stock_pipeline
-docker compose up -d --build
-
-# Access remote Airflow: http://<server-ip>:8080
-```
-
-See **[Deployment Guide](./docs/3_DEPLOYMENT_GUIDE.md)** for detailed cloud setup.
-
 ---
+## Current Status
 
-## 📊 Current Status
-
-### ✅ PRODUCTION READY
+### PRODUCTION READY (other features need accumulation of data)
 - **154 stocks** loaded (12 NGX sectors)
 - **Daily execution**: 3:00 PM WAT (2:00 PM UTC)
 - **Execution time**: ~37 seconds end-to-end
 - **Quality**: 50% GOOD, 50% INCOMPLETE (normal for NGX)
 - **Webserver**: http://localhost:8080
 
-### 📈 Data Accumulation Timeline
+### Data Accumulation Timeline
 - **Days 1-20**: Price collection (building history)
 - **Days 21-30**: Technical indicators activate
 - **Days 31+**: Full advisory with recommendations
 - **Month 2-3**: Rich data for backtesting
 
----
-
-## 🏗️ Architecture
+## Architecture
 
 ```
 NGX Scraper → Validation → PostgreSQL → Technical Analysis
@@ -91,14 +68,14 @@ NGX Scraper → Validation → PostgreSQL → Technical Analysis
 ```
 
 **Tech Stack:**
-- Python 3.11, PostgreSQL 16, Airflow 2.10
+- Python 3.12, PostgreSQL 16, Airflow 2.10
 - Docker Compose orchestration
 - SQLAlchemy ORM, Pandas analysis
 - BeautifulSoup4 web scraping
 
 ---
 
-## 📚 Documentation
+## Documentation
 
 | Document | Description |
 |----------|-------------|
@@ -109,7 +86,7 @@ NGX Scraper → Validation → PostgreSQL → Technical Analysis
 
 ---
 
-## 🎯 Key Features
+## Key Features
 
 ### 1. Data Collection
 ✅ NGX scraping with retry logic  
@@ -135,7 +112,7 @@ NGX Scraper → Validation → PostgreSQL → Technical Analysis
 ✅ Daily digest summaries  
 ✅ Severity-based routing  
 
-### 5. CLI Interface (30+ commands)
+### 5. CLI Interface 
 ```bash
 # Database inspection
 docker compose exec app python -m app.cli list-stocks
@@ -152,7 +129,7 @@ docker compose exec app python -m app.cli test-email
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 Stock_pipeline/
@@ -177,7 +154,7 @@ Stock_pipeline/
 
 ---
 
-## 🔑 Services
+## Services
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
@@ -187,17 +164,14 @@ Stock_pipeline/
 
 ---
 
-## 💻 System Requirements
+## System Requirements
 
 **Local Docker:**
 - 4GB RAM minimum
 - 10GB disk space
 - Docker 20.10+ & Docker Compose 2.0+
 
-**Cloud Server (for 24/7 operation):**
-- DigitalOcean Droplet: $12/month (2GB RAM, 1 vCPU, 50GB SSD)
-- AWS EC2 t3.small: $10-20/month
-- AWS Lightsail: $5-10/month
+
 
 ---
 
