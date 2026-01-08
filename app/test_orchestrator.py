@@ -27,7 +27,6 @@ def test_pipeline_config():
     config = PipelineConfig()
     logger.info("Default configuration:")
     logger.info(f"  fetch_ngx: {config.fetch_ngx}")
-    logger.info(f"  fetch_yahoo: {config.fetch_yahoo}")
     logger.info(f"  validate_data: {config.validate_data}")
     logger.info(f"  load_stocks: {config.load_stocks}")
     logger.info(f"  load_prices: {config.load_prices}")
@@ -40,13 +39,11 @@ def test_pipeline_config():
     # Custom config (disable fetching for testing)
     custom_config = PipelineConfig(
         fetch_ngx=False,
-        fetch_yahoo=False,
         batch_size=10,
         lookback_days=7
     )
     logger.info("\nCustom configuration:")
     logger.info(f"  fetch_ngx: {custom_config.fetch_ngx}")
-    logger.info(f"  fetch_yahoo: {custom_config.fetch_yahoo}")
     logger.info(f"  batch_size: {custom_config.batch_size}")
     logger.info(f"  lookback_days: {custom_config.lookback_days}")
     
@@ -70,13 +67,11 @@ def test_orchestrator_initialization():
     # Test with custom config
     custom_config = PipelineConfig(
         fetch_ngx=False,
-        fetch_yahoo=False,
         calculate_indicators=False
     )
     orchestrator2 = PipelineOrchestrator(config=custom_config)
     logger.info("\nOrchestrator initialized with custom config")
     logger.info(f"  NGX source: {orchestrator2.ngx_source}")
-    logger.info(f"  Yahoo source: {orchestrator2.yahoo_source}")
     
     logger.info("✓ Initialization test completed")
 
@@ -91,7 +86,6 @@ def test_pipeline_with_existing_data():
     # (skip fetching since we have data in DB)
     config = PipelineConfig(
         fetch_ngx=False,
-        fetch_yahoo=False,
         load_stocks=False,
         load_prices=False,
         calculate_indicators=True,
@@ -175,7 +169,6 @@ def test_pipeline_result_structure():
     # Run minimal pipeline
     config = PipelineConfig(
         fetch_ngx=False,
-        fetch_yahoo=False,
         load_stocks=False,
         load_prices=False,
         calculate_indicators=False,

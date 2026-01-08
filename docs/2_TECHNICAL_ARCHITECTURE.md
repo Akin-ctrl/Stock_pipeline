@@ -598,10 +598,7 @@ class NGXDataSource(DataSource):
         ...
 
 # Future: Add new sources without modifying orchestrator
-class YahooDataSource(DataSource):
-    def fetch_stocks(self, date: datetime) -> pd.DataFrame:
-        # Yahoo Finance implementation
-        ...
+# Example: Alternative exchanges, APIs, or data providers
 ```
 
 ### 4.4 Dataclass Configuration

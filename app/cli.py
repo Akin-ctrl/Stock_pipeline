@@ -56,7 +56,6 @@ def pipeline():
 
 @pipeline.command()
 @click.option('--fetch-ngx/--no-fetch-ngx', default=True, help='Fetch NGX data')
-@click.option('--fetch-yahoo/--no-fetch-yahoo', default=True, help='Fetch Yahoo Finance data')
 @click.option('--validate/--no-validate', default=True, help='Validate data quality')
 @click.option('--load-stocks/--no-load-stocks', default=True, help='Load stock master data')
 @click.option('--load-prices/--no-load-prices', default=True, help='Load price data')
@@ -67,7 +66,6 @@ def pipeline():
 @click.option('--lookback-days', default=30, type=int, help='Days of historical data')
 def run(
     fetch_ngx: bool,
-    fetch_yahoo: bool,
     validate: bool,
     load_stocks: bool,
     load_prices: bool,
@@ -83,7 +81,6 @@ def run(
     
     config = PipelineConfig(
         fetch_ngx=fetch_ngx,
-        fetch_yahoo=fetch_yahoo,
         validate_data=validate,
         load_stocks=load_stocks,
         load_prices=load_prices,

@@ -108,7 +108,7 @@ class DataValidator:
         df = self._validate_percentage_changes(df, warnings)
         df = self._validate_exchanges(df, errors)
         df = self._validate_sectors(df, warnings)
-        df = self._check_duplicates(df, errors)
+        df = self._check_duplicates(df, warnings)
         
         # Count results
         valid_count = len(df[df['data_quality_flag'] == 'GOOD'])
@@ -258,15 +258,15 @@ class DataValidator:
         
         return df
     
-    def _check_duplicates(self, df: pd.DataFrame, errors: List[Dict]) -> pd.DataFrame:
+    def _check_duplicates(self, df: pd.DataFrame, warnings: List[Dict]) -> pd.DataFrame:
         """Check for duplicate stock_code + price_date."""
         duplicates = df[df.duplicated(subset=['stock_code', 'price_date'], keep='first')]
         
         for idx in duplicates.index:
-            errors.append({
+            warnings.append({
                 'index': idx,
                 'field': 'duplicate',
-                'error': 'Duplicate stock_code + price_date',
+                'warning': 'Duplicate stock_code + price_date',
                 'value': {
                     'stock_code': df.loc[idx, 'stock_code'],
                     'price_date': df.loc[idx, 'price_date']

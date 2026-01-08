@@ -2,7 +2,7 @@
 Nigerian Stock Exchange ETL Pipeline DAG
 
 This DAG orchestrates the daily extraction, transformation, and loading of Nigerian
-stock market data from NGX and Yahoo Finance sources. It runs daily at 3PM WAT
+stock market data from NGX web source. It runs daily at 3PM WAT
 (after market close at 2:30 PM WAT) to capture the day's trading data.
 
 Pipeline Stages:
@@ -226,10 +226,11 @@ def generate_daily_summary(**context) -> str:
 @dag(
     dag_id="nigerian_stock_pipeline",
     description="Daily ETL pipeline for Nigerian Stock Exchange data with alerts and investment recommendations",
-    schedule="0 14 * * *",  # 3PM WAT = 2PM UTC (WAT is UTC+1)
-    start_date=pendulum.datetime(2025, 1, 1, tz="UTC"),
-    catchup=False,  # Don't backfill historical runs
+    schedule="0 14 * * *",  # 2PM UTC = 3PM WAT (West Africa Time is UTC+1)
+    start_date=pendulum.datetime(2026, 1, 5, tz="UTC"),
+    catchup=True,  # Run missed schedules automatically
     max_active_runs=1,  # Only one pipeline run at a time
+    max_active_tasks=10,  # Allow parallel task execution
     default_args=DEFAULT_ARGS,
     tags=["nigerian_stocks", "etl", "daily", "production"],
     doc_md=__doc__,
@@ -241,9 +242,9 @@ def nigerian_stock_pipeline_dag():
     """
     Daily Nigerian Stock Exchange ETL Pipeline
     
-    Orchestrates data ingestion from NGX and Yahoo Finance, validates data quality,
+    Orchestrates data ingestion from NGX, validates data quality,
     transforms and loads to PostgreSQL, calculates technical indicators, and
-    evaluates alert conditions for 156+ Nigerian stocks.
+    evaluates alert conditions for 154 Nigerian stocks.
     """
     
     # Task 1: Run the complete pipeline
@@ -254,8 +255,8 @@ def nigerian_stock_pipeline_dag():
         doc_md="""
         ### Run ETL Pipeline
         
-        Executes all 8 stages of the Nigerian stock pipeline:
-        1. **Fetch**: NGX scraping + Yahoo Finance API
+        Executes all stages of the Nigerian stock pipeline:
+        1. **Fetch**: NGX web scraping from african-markets.com
         2. **Validate**: Data quality checks (nulls, ranges, OHLC)
         3. **Transform**: Standardization and cleaning
         4. **Load Stocks**: Insert/update stock master data
@@ -264,7 +265,7 @@ def nigerian_stock_pipeline_dag():
         7. **Evaluate Alerts**: Check 5 rule types + send Email/Slack notifications
         8. **Generate Recommendations**: BUY/SELL/HOLD signals with scoring and targets
         
-        **SLA**: 30 minutes  
+        **SLA**: MAX 30 minutes  
         **Retries**: 3 attempts with 5-minute delays  
         **Output**: Pipeline metrics pushed to XCom
         """,

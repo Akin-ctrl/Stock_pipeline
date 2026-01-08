@@ -34,7 +34,7 @@ class DataTransformer:
         
         Args:
             df: Raw DataFrame from data source
-            source: Data source name ('ngx', 'yahoo', etc.)
+            source: Data source name ('ngx', etc.)
             
         Returns:
             Transformed DataFrame ready for database insertion

@@ -2,7 +2,7 @@
 Pipeline orchestrator.
 
 Coordinates the complete ETL workflow:
-1. Fetch data from sources (NGX, Yahoo Finance)
+1. Fetch data from sources (NGX)
 2. Validate data quality
 3. Transform and standardize data
 4. Load into database (stocks, prices)
@@ -39,7 +39,6 @@ class PipelineConfig:
     
     Attributes:
         fetch_ngx: Whether to fetch NGX data
-        fetch_yahoo: Whether to fetch Yahoo Finance data
         validate_data: Whether to run validation
         load_stocks: Whether to load/update stocks
         load_prices: Whether to load prices
@@ -51,7 +50,6 @@ class PipelineConfig:
         lookback_days: Days of historical data to fetch
     """
     fetch_ngx: bool = True
-    fetch_yahoo: bool = True
     validate_data: bool = True
     load_stocks: bool = True
     load_prices: bool = True
@@ -183,7 +181,7 @@ class PipelineOrchestrator:
         
         try:
             # Stage 1: Fetch data
-            if self.config.fetch_ngx or self.config.fetch_yahoo:
+            if self.config.fetch_ngx:
                 raw_data = self._fetch_data(execution_date, stock_codes)
                 self.logger.info(f"DEBUG: Fetched {len(raw_data)} rows from sources")
                 if raw_data.empty:
@@ -348,15 +346,11 @@ class PipelineOrchestrator:
                 for warning in result.warnings[:10]:  # First 10
                     self.warnings.append(f"Validation: {warning.get('warning', 'Unknown')}")
             
-            # Add errors for invalid records (but skip duplicate errors as they're handled by deduplication)
+            # Add errors for invalid records
             if result.errors:
-                for error in result.errors[:10]:  # First 10
+                for error in result.errors[:10]:
                     error_msg = error.get('error', 'Unknown')
-                    # Duplicates are warnings, not errors - they get deduplicated in transform stage
-                    if 'Duplicate' in error_msg:
-                        self.warnings.append(f"Validation: {error_msg}")
-                    else:
-                        self.errors.append(f"Validation: {error_msg}")
+                    self.errors.append(f"Validation: {error_msg}")
             
             if not result.is_valid:
                 self.logger.warning(
