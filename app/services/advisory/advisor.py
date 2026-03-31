@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import List, Optional, Dict
 from decimal import Decimal
+from enum import Enum
 
 from app.services.advisory.signals import (
     SignalGenerator, SignalType, TechnicalSignal
@@ -19,6 +20,72 @@ from app.services.advisory.signals import (
 from app.services.advisory.scoring import StockScorer, StockScore, ScoreCategory
 from app.repositories import IndicatorRepository, PriceRepository, StockRepository
 from app.utils import get_logger
+
+
+class RecommendationProfile(Enum):
+    """Strategy profile for recommendation tuning."""
+    BALANCED = "balanced"
+    SHORT_TERM = "short_term"
+    LONG_TERM = "long_term"
+
+
+@dataclass(frozen=True)
+class RecommendationProfileConfig:
+    """Configuration bundle for profile-specific scoring and signal thresholds."""
+    technical_weight: float
+    momentum_weight: float
+    volatility_weight: float
+    trend_weight: float
+    volume_weight: float
+    rsi_oversold: float
+    rsi_overbought: float
+    rsi_strong_oversold: float
+    rsi_strong_overbought: float
+    min_score: float
+    min_confidence: float
+
+
+PROFILE_CONFIGS: Dict[RecommendationProfile, RecommendationProfileConfig] = {
+    RecommendationProfile.BALANCED: RecommendationProfileConfig(
+        technical_weight=0.30,
+        momentum_weight=0.25,
+        volatility_weight=0.20,
+        trend_weight=0.15,
+        volume_weight=0.10,
+        rsi_oversold=30.0,
+        rsi_overbought=70.0,
+        rsi_strong_oversold=20.0,
+        rsi_strong_overbought=80.0,
+        min_score=40.0,
+        min_confidence=0.50,
+    ),
+    RecommendationProfile.SHORT_TERM: RecommendationProfileConfig(
+        technical_weight=0.25,
+        momentum_weight=0.35,
+        volatility_weight=0.10,
+        trend_weight=0.10,
+        volume_weight=0.20,
+        rsi_oversold=35.0,
+        rsi_overbought=65.0,
+        rsi_strong_oversold=25.0,
+        rsi_strong_overbought=75.0,
+        min_score=45.0,
+        min_confidence=0.55,
+    ),
+    RecommendationProfile.LONG_TERM: RecommendationProfileConfig(
+        technical_weight=0.35,
+        momentum_weight=0.10,
+        volatility_weight=0.25,
+        trend_weight=0.25,
+        volume_weight=0.05,
+        rsi_oversold=28.0,
+        rsi_overbought=72.0,
+        rsi_strong_oversold=18.0,
+        rsi_strong_overbought=82.0,
+        min_score=50.0,
+        min_confidence=0.60,
+    ),
+}
 
 
 @dataclass
@@ -72,7 +139,7 @@ class StockScreener:
     **NOT INVESTMENT ADVICE** - For screening and analysis only.
     """
     
-    def __init__(self, db_session):
+    def __init__(self, db_session, strategy_profile: str = RecommendationProfile.BALANCED.value):
         """
         Initialize advisor.
         
@@ -82,19 +149,54 @@ class StockScreener:
         self.db = db_session
         self.logger = get_logger("stock_screener")
         
+        self.strategy_profile = self._parse_profile(strategy_profile)
+        self.profile_config = PROFILE_CONFIGS[self.strategy_profile]
         self.signal_generator = SignalGenerator()
         self.stock_scorer = StockScorer()
+        self._apply_profile(self.strategy_profile)
         
         self.stock_repo = StockRepository(db_session)
         self.price_repo = PriceRepository(db_session)
         self.indicator_repo = IndicatorRepository(db_session)
+
+    def _parse_profile(self, profile: str) -> RecommendationProfile:
+        """Parse profile string with safe fallback to balanced."""
+        normalized = (profile or RecommendationProfile.BALANCED.value).strip().lower()
+        for option in RecommendationProfile:
+            if option.value == normalized:
+                return option
+        self.logger.warning(
+            f"Unknown strategy profile '{profile}', defaulting to balanced"
+        )
+        return RecommendationProfile.BALANCED
+
+    def _apply_profile(self, profile: RecommendationProfile) -> None:
+        """Apply profile config to signal/scoring engines."""
+        self.strategy_profile = profile
+        self.profile_config = PROFILE_CONFIGS[profile]
+
+        cfg = self.profile_config
+        self.signal_generator = SignalGenerator(
+            rsi_oversold=cfg.rsi_oversold,
+            rsi_overbought=cfg.rsi_overbought,
+            rsi_strong_oversold=cfg.rsi_strong_oversold,
+            rsi_strong_overbought=cfg.rsi_strong_overbought,
+        )
+        self.stock_scorer = StockScorer(
+            technical_weight=cfg.technical_weight,
+            momentum_weight=cfg.momentum_weight,
+            volatility_weight=cfg.volatility_weight,
+            trend_weight=cfg.trend_weight,
+            volume_weight=cfg.volume_weight,
+        )
     
     def generate_recommendations(
         self,
         recommendation_date: Optional[date] = None,
         stock_codes: Optional[List[str]] = None,
-        min_score: float = 40.0,
-        min_confidence: float = 0.5
+        min_score: Optional[float] = None,
+        min_confidence: Optional[float] = None,
+        strategy_profile: Optional[str] = None,
     ) -> List[StockRecommendation]:
         """
         Generate recommendations for stocks.
@@ -102,18 +204,36 @@ class StockScreener:
         Args:
             recommendation_date: Date to generate recommendations for
             stock_codes: Specific stocks to analyze (None = all active)
-            min_score: Minimum score threshold
-            min_confidence: Minimum confidence threshold
+            min_score: Minimum score threshold (defaults to profile)
+            min_confidence: Minimum confidence threshold (defaults to profile)
+            strategy_profile: balanced, short_term, or long_term
             
         Returns:
             List of StockRecommendation objects
         """
         if recommendation_date is None:
             recommendation_date = date.today()
+
+        if strategy_profile is not None:
+            self._apply_profile(self._parse_profile(strategy_profile))
+
+        effective_min_score = (
+            self.profile_config.min_score if min_score is None else min_score
+        )
+        effective_min_confidence = (
+            self.profile_config.min_confidence
+            if min_confidence is None
+            else min_confidence
+        )
         
         self.logger.info(
             f"Generating recommendations for {recommendation_date}",
-            extra={"date": str(recommendation_date)}
+            extra={
+                "date": str(recommendation_date),
+                "profile": self.strategy_profile.value,
+                "min_score": effective_min_score,
+                "min_confidence": effective_min_confidence,
+            }
         )
         
         # Get stocks to analyze
@@ -130,8 +250,8 @@ class StockScreener:
                 recommendation = self._analyze_stock(
                     stock,
                     recommendation_date,
-                    min_score,
-                    min_confidence
+                    effective_min_score,
+                    effective_min_confidence,
                 )
                 
                 if recommendation:
@@ -147,7 +267,10 @@ class StockScreener:
         
         self.logger.info(
             f"Generated {len(recommendations)} recommendations",
-            extra={"recommendations": len(recommendations)}
+            extra={
+                "recommendations": len(recommendations),
+                "profile": self.strategy_profile.value,
+            }
         )
         
         return recommendations
@@ -243,7 +366,7 @@ class StockScreener:
     
     def _build_indicators_dict(
         self,
-        indicators_data: list,
+        indicators_data,
         latest_price
     ) -> Dict[str, float]:
         """Build indicators dictionary from database records."""
@@ -251,28 +374,48 @@ class StockScreener:
             'current_price': float(latest_price.close_price),
             'volume_ratio': 1.0  # Default
         }
-        
-        for ind in indicators_data:
-            if ind.indicator_type == 'RSI':
-                indicators['rsi_14'] = float(ind.indicator_value)
-            elif ind.indicator_type == 'SMA_50':
-                indicators['sma_50'] = float(ind.indicator_value)
-            elif ind.indicator_type == 'SMA_200':
-                indicators['sma_200'] = float(ind.indicator_value)
-            elif ind.indicator_type == 'MACD':
-                indicators['macd'] = float(ind.indicator_value)
-            elif ind.indicator_type == 'MACD_SIGNAL':
-                indicators['macd_signal'] = float(ind.indicator_value)
-            elif ind.indicator_type == 'VOLATILITY':
-                indicators['volatility'] = float(ind.indicator_value)
+
+        # Current schema: one wide FactTechnicalIndicator row per stock/date
+        if hasattr(indicators_data, 'rsi_14'):
+            if indicators_data.rsi_14 is not None:
+                indicators['rsi_14'] = float(indicators_data.rsi_14)
+            if indicators_data.macd is not None:
+                indicators['macd'] = float(indicators_data.macd)
+            if indicators_data.macd_signal is not None:
+                indicators['macd_signal'] = float(indicators_data.macd_signal)
+            if indicators_data.volatility_30 is not None:
+                indicators['volatility'] = float(indicators_data.volatility_30)
+            if indicators_data.ma_30 is not None:
+                indicators['sma_50'] = float(indicators_data.ma_30)
+            if indicators_data.ma_90 is not None:
+                indicators['sma_200'] = float(indicators_data.ma_90)
+
+        # Backward compatibility: older long-format indicator rows
+        elif isinstance(indicators_data, list):
+            for ind in indicators_data:
+                if ind.indicator_type == 'RSI':
+                    indicators['rsi_14'] = float(ind.indicator_value)
+                elif ind.indicator_type == 'SMA_50':
+                    indicators['sma_50'] = float(ind.indicator_value)
+                elif ind.indicator_type == 'SMA_200':
+                    indicators['sma_200'] = float(ind.indicator_value)
+                elif ind.indicator_type == 'MACD':
+                    indicators['macd'] = float(ind.indicator_value)
+                elif ind.indicator_type == 'MACD_SIGNAL':
+                    indicators['macd_signal'] = float(ind.indicator_value)
+                elif ind.indicator_type == 'VOLATILITY':
+                    indicators['volatility'] = float(ind.indicator_value)
         
         # Calculate volume ratio if data available
-        if latest_price.volume:
+        if getattr(latest_price, 'volume', None):
             # This is simplified - in production, calculate avg volume
             indicators['volume_ratio'] = 1.2  # Placeholder
+        elif getattr(latest_price, 'change_1d_pct', None) is not None:
+            # Keep score engine supplied with recent movement proxy
+            indicators['price_change_pct'] = float(latest_price.change_1d_pct)
         
         # Calculate price change percentage
-        if 'sma_50' in indicators:
+        if 'price_change_pct' not in indicators and 'sma_50' in indicators:
             price_diff = indicators['current_price'] - indicators['sma_50']
             indicators['price_change_pct'] = (price_diff / indicators['sma_50']) * 100
         

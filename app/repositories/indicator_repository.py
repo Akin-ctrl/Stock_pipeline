@@ -48,23 +48,52 @@ class IndicatorRepository(BaseRepository[FactTechnicalIndicator]):
             .first()
         )
     
-    def get_latest_by_code(self, stock_code: str) -> Optional[FactTechnicalIndicator]:
+    def get_latest_by_code(
+        self,
+        stock_code: str,
+        as_of_date: Optional[date] = None
+    ) -> Optional[FactTechnicalIndicator]:
         """
         Get most recent indicators by stock code.
         
         Args:
             stock_code: Stock ticker
+            as_of_date: Optional date cutoff (calculation_date <= as_of_date)
             
         Returns:
             Latest indicator record or None
         """
-        return (
+        query = (
             self.session.query(FactTechnicalIndicator)
             .join(DimStock)
             .filter(DimStock.stock_code == stock_code.upper())
-            .order_by(desc(FactTechnicalIndicator.calculation_date))
-            .first()
         )
+
+        if as_of_date:
+            query = query.filter(FactTechnicalIndicator.calculation_date <= as_of_date)
+
+        return query.order_by(desc(FactTechnicalIndicator.calculation_date)).first()
+
+    def create_indicator(self, **indicator_data) -> FactTechnicalIndicator:
+        """Create technical indicator record with backward-compatible key mapping."""
+        mapped = dict(indicator_data)
+
+        if 'indicator_date' in mapped and 'calculation_date' not in mapped:
+            mapped['calculation_date'] = mapped.pop('indicator_date')
+
+        key_map = {
+            'rsi': 'rsi_14',
+            'macd_line': 'macd',
+            'bb_upper': 'bollinger_upper',
+            'bb_middle': 'bollinger_middle',
+            'bb_lower': 'bollinger_lower',
+        }
+
+        for old_key, new_key in key_map.items():
+            if old_key in mapped and new_key not in mapped:
+                mapped[new_key] = mapped.pop(old_key)
+
+        return self.create(**mapped)
     
     def get_indicator_history(
         self,

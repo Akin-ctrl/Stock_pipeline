@@ -25,7 +25,6 @@ class FactDailyPrice(Base, TimestampMixin):
     Daily stock price fact table (time-series).
     
     Stores daily closing price and derived metrics for each stock.
-    Optimized for NGX data which provides close price, daily/YTD changes, and market cap.
     
     Attributes:
         price_id: Primary key
@@ -34,8 +33,7 @@ class FactDailyPrice(Base, TimestampMixin):
         close_price: Closing price (required)
         change_1d_pct: Daily percentage change
         change_ytd_pct: Year-to-date percentage change
-        market_cap: Market capitalization as string (billions NGN)
-        source: Data source identifier (ngx, yf)
+        source: Data source identifier (afrimarket)
         data_quality_flag: Quality indicator ('GOOD', 'INCOMPLETE', 'SUSPICIOUS', 'MISSING', 'STALE', 'POOR')
         has_complete_data: Whether all expected fields are present
         ingestion_timestamp: When data was ingested
@@ -46,8 +44,7 @@ class FactDailyPrice(Base, TimestampMixin):
         >>>     price_date=date(2025, 12, 30),
         >>>     close_price=Decimal('35.50'),
         >>>     change_1d_pct=Decimal('2.5'),
-        >>>     change_ytd_pct=Decimal('15.3'),
-        >>>     market_cap='450.5'
+        >>>     change_ytd_pct=Decimal('15.3')
         >>> )
     """
     __tablename__ = 'fact_daily_prices'
@@ -56,19 +53,19 @@ class FactDailyPrice(Base, TimestampMixin):
     stock_id = Column(Integer, ForeignKey('dim_stocks.stock_id', ondelete='CASCADE'), nullable=False)
     price_date = Column(Date, nullable=False, index=True)
     
-    # Price Data (NGX provides only close price)
+    # Price Data
     close_price = Column(Numeric(18, 4), nullable=False)
     
     # Calculated Fields (from source)
     change_1d_pct = Column(Numeric(10, 4))
     change_ytd_pct = Column(Numeric(10, 4))
-    market_cap = Column(String(50))
     
     # Metadata
     source = Column(String(50), nullable=False)
     data_quality_flag = Column(String(20), default='GOOD')
     has_complete_data = Column(Boolean, default=True)
     ingestion_timestamp = Column(TIMESTAMP, server_default=func.now())
+    
     
     # Constraints
     __table_args__ = (

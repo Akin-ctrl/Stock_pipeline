@@ -57,7 +57,6 @@ class DataSource(ABC):
                 - volume: int (optional) - Trading volume
                 - change_1d_pct: float (optional) - 1-day % change
                 - change_ytd_pct: float (optional) - YTD % change
-                - market_cap: str (optional) - Market cap category
                 
         Raises:
             DataFetchError: If fetching data fails

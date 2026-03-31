@@ -26,8 +26,8 @@ class IndicatorCalculator:
     """
     
     # Default parameters
-    MA_SHORT_PERIOD = 20  # 20-day moving average
-    MA_LONG_PERIOD = 50   # 50-day moving average
+    MA_SHORT_PERIOD = 7   # 7-day moving average
+    MA_LONG_PERIOD = 30   # 30-day moving average
     RSI_PERIOD = 14       # 14-day RSI
     MACD_FAST = 12        # MACD fast EMA
     MACD_SLOW = 26        # MACD slow EMA
@@ -82,7 +82,7 @@ class IndicatorCalculator:
         Calculate all technical indicators for price data.
         
         Args:
-            price_df: DataFrame with columns: price_date, close_price, high_price, low_price
+            price_df: DataFrame with columns: price_date, close_price
                      Must be sorted by price_date ascending
             stock_code: Optional stock code for logging
             
@@ -133,6 +133,12 @@ class IndicatorCalculator:
         # Long-term MA
         df[f'ma_{self.ma_long}'] = df['close_price'].rolling(
             window=self.ma_long,
+            min_periods=1
+        ).mean()
+
+        # 90-day MA (stored in fact_technical_indicators)
+        df['ma_90'] = df['close_price'].rolling(
+            window=90,
             min_periods=1
         ).mean()
         
@@ -326,16 +332,17 @@ class IndicatorCalculator:
         for _, row in df.iterrows():
             indicator = {
                 'stock_id': stock_id,
-                'indicator_date': row['price_date'],
+                'calculation_date': row['price_date'],
                 f'ma_{self.ma_short}': self._to_float(row.get(f'ma_{self.ma_short}')),
                 f'ma_{self.ma_long}': self._to_float(row.get(f'ma_{self.ma_long}')),
-                'rsi': self._to_float(row.get('rsi')),
-                'macd_line': self._to_float(row.get('macd_line')),
+                'ma_90': self._to_float(row.get('ma_90')),
+                'rsi_14': self._to_float(row.get('rsi')),
+                'macd': self._to_float(row.get('macd_line')),
                 'macd_signal': self._to_float(row.get('macd_signal')),
                 'macd_histogram': self._to_float(row.get('macd_histogram')),
-                'bb_upper': self._to_float(row.get('bb_upper')),
-                'bb_middle': self._to_float(row.get('bb_middle')),
-                'bb_lower': self._to_float(row.get('bb_lower')),
+                'bollinger_upper': self._to_float(row.get('bb_upper')),
+                'bollinger_middle': self._to_float(row.get('bb_middle')),
+                'bollinger_lower': self._to_float(row.get('bb_lower')),
                 f'volatility_{self.volatility_period}': self._to_float(row.get(f'volatility_{self.volatility_period}')),
                 'ma_crossover_signal': row.get('ma_crossover_signal')
             }

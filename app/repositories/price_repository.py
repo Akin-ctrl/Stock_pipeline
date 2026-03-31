@@ -49,24 +49,57 @@ class PriceRepository(BaseRepository[FactDailyPrice]):
             .first()
         )
     
-    def get_latest_by_code(self, stock_code: str) -> Optional[FactDailyPrice]:
+    def get_latest_by_code(
+        self,
+        stock_code: str,
+        as_of_date: Optional[date] = None
+    ) -> Optional[FactDailyPrice]:
         """
         Get most recent price by stock code.
         
         Args:
             stock_code: Stock ticker
+            as_of_date: Optional date cutoff (price_date <= as_of_date)
             
         Returns:
             Latest price record or None
         """
-        return (
+        query = (
             self.session.query(FactDailyPrice)
             .join(DimStock)
             .filter(DimStock.stock_code == stock_code.upper())
-            .order_by(desc(FactDailyPrice.price_date))
-            .first()
         )
+
+        if as_of_date:
+            query = query.filter(FactDailyPrice.price_date <= as_of_date)
+
+        return query.order_by(desc(FactDailyPrice.price_date)).first()
     
+    def get_latest_price(
+        self,
+        stock_id: int,
+        as_of_date: Optional[date] = None
+    ) -> Optional[FactDailyPrice]:
+        """
+        Backward-compatible latest price lookup by stock ID.
+
+        Args:
+            stock_id: Stock identifier
+            as_of_date: Optional date cutoff (price_date <= as_of_date)
+
+        Returns:
+            Latest price record or None
+        """
+        query = (
+            self.session.query(FactDailyPrice)
+            .filter(FactDailyPrice.stock_id == stock_id)
+        )
+
+        if as_of_date:
+            query = query.filter(FactDailyPrice.price_date <= as_of_date)
+
+        return query.order_by(desc(FactDailyPrice.price_date)).first()
+
     def get_price_history(
         self,
         stock_id: int,
@@ -148,7 +181,7 @@ class PriceRepository(BaseRepository[FactDailyPrice]):
         Args:
             price_data: List of dicts with price information
                 Required keys: stock_id, price_date, close_price, source
-                Optional: change_1d_pct, change_ytd_pct, market_cap, etc.
+                Optional: change_1d_pct, change_ytd_pct, etc.
                 
         Returns:
             Number of records inserted/updated
@@ -168,7 +201,6 @@ class PriceRepository(BaseRepository[FactDailyPrice]):
                 'close_price': stmt.excluded.close_price,
                 'change_1d_pct': stmt.excluded.change_1d_pct,
                 'change_ytd_pct': stmt.excluded.change_ytd_pct,
-                'market_cap': stmt.excluded.market_cap,
                 'source': stmt.excluded.source,
                 'data_quality_flag': stmt.excluded.data_quality_flag,
                 'has_complete_data': stmt.excluded.has_complete_data,

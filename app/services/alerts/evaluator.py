@@ -8,6 +8,7 @@ Supports various rule types: price movements, MA crossovers, RSI extremes, volat
 from typing import Dict, List, Optional, Tuple
 from datetime import date, datetime, timedelta
 from dataclasses import dataclass
+import json
 import pandas as pd
 from sqlalchemy.orm import Session
 
@@ -219,7 +220,8 @@ class AlertEvaluator:
             return None
         
         # Parse threshold from rule parameters
-        threshold = float(rule.parameters.get('threshold', 5.0))
+        params = self._get_rule_parameters(rule)
+        threshold = float(params.get('threshold', 5.0))
         
         # Check if change exceeds threshold
         if abs(price.change_1d_pct) >= threshold:
@@ -233,8 +235,10 @@ class AlertEvaluator:
                 'stock_id': stock.stock_id,
                 'rule_id': rule.rule_id,
                 'alert_date': evaluation_date,
+                'alert_type': rule.rule_type,
                 'severity': rule.severity,
                 'message': message,
+                'trigger_value': float(abs(price.change_1d_pct)),
                 'metadata': {
                     'change_pct': price.change_1d_pct,
                     'close_price': float(price.close_price),
@@ -266,12 +270,14 @@ class AlertEvaluator:
                 'stock_id': stock.stock_id,
                 'rule_id': rule.rule_id,
                 'alert_date': evaluation_date,
+                'alert_type': rule.rule_type,
                 'severity': rule.severity,
                 'message': message,
+                'trigger_value': float(indicator.ma_7) if indicator.ma_7 else None,
                 'metadata': {
                     'signal': 'BULLISH',
-                    'ma_short': float(indicator.ma_20) if indicator.ma_20 else None,
-                    'ma_long': float(indicator.ma_50) if indicator.ma_50 else None
+                    'ma_short': float(indicator.ma_7) if indicator.ma_7 else None,
+                    'ma_long': float(indicator.ma_30) if indicator.ma_30 else None
                 }
             }
         elif 'BEARISH' in signal_type and indicator.ma_crossover_signal == 'BEARISH':
@@ -280,12 +286,14 @@ class AlertEvaluator:
                 'stock_id': stock.stock_id,
                 'rule_id': rule.rule_id,
                 'alert_date': evaluation_date,
+                'alert_type': rule.rule_type,
                 'severity': rule.severity,
                 'message': message,
+                'trigger_value': float(indicator.ma_7) if indicator.ma_7 else None,
                 'metadata': {
                     'signal': 'BEARISH',
-                    'ma_short': float(indicator.ma_20) if indicator.ma_20 else None,
-                    'ma_long': float(indicator.ma_50) if indicator.ma_50 else None
+                    'ma_short': float(indicator.ma_7) if indicator.ma_7 else None,
+                    'ma_long': float(indicator.ma_30) if indicator.ma_30 else None
                 }
             }
         
@@ -301,22 +309,25 @@ class AlertEvaluator:
         # Get latest indicator
         indicator = self.indicator_repo.get_latest_by_code(stock.stock_code, evaluation_date)
         
-        if not indicator or indicator.rsi is None:
+        if not indicator or indicator.rsi_14 is None:
             return None
         
-        rsi_value = float(indicator.rsi)
+        rsi_value = float(indicator.rsi_14)
+        params = self._get_rule_parameters(rule)
         
         # Check for oversold
         if 'OVERSOLD' in rule.rule_name.upper():
-            threshold = float(rule.parameters.get('oversold', 30))
+            threshold = float(params.get('oversold', 30))
             if rsi_value <= threshold:
                 message = f"{stock.stock_code}: RSI oversold at {rsi_value:.2f} (threshold: {threshold})"
                 return {
                     'stock_id': stock.stock_id,
                     'rule_id': rule.rule_id,
                     'alert_date': evaluation_date,
+                    'alert_type': rule.rule_type,
                     'severity': rule.severity,
                     'message': message,
+                    'trigger_value': rsi_value,
                     'metadata': {
                         'rsi': rsi_value,
                         'threshold': threshold,
@@ -326,15 +337,17 @@ class AlertEvaluator:
         
         # Check for overbought
         elif 'OVERBOUGHT' in rule.rule_name.upper():
-            threshold = float(rule.parameters.get('overbought', 70))
+            threshold = float(params.get('overbought', 70))
             if rsi_value >= threshold:
                 message = f"{stock.stock_code}: RSI overbought at {rsi_value:.2f} (threshold: {threshold})"
                 return {
                     'stock_id': stock.stock_id,
                     'rule_id': rule.rule_id,
                     'alert_date': evaluation_date,
+                    'alert_type': rule.rule_type,
                     'severity': rule.severity,
                     'message': message,
+                    'trigger_value': rsi_value,
                     'metadata': {
                         'rsi': rsi_value,
                         'threshold': threshold,
@@ -358,7 +371,8 @@ class AlertEvaluator:
             return None
         
         volatility = float(indicator.volatility_30)
-        threshold = float(rule.parameters.get('threshold', 0.3))
+        params = self._get_rule_parameters(rule)
+        threshold = float(params.get('threshold', 0.3))
         
         if volatility >= threshold:
             message = (
@@ -369,8 +383,10 @@ class AlertEvaluator:
                 'stock_id': stock.stock_id,
                 'rule_id': rule.rule_id,
                 'alert_date': evaluation_date,
+                'alert_type': rule.rule_type,
                 'severity': rule.severity,
                 'message': message,
+                'trigger_value': volatility,
                 'metadata': {
                     'volatility': volatility,
                     'threshold': threshold
@@ -412,7 +428,8 @@ class AlertEvaluator:
         avg_volume = sum(historical_volumes) / len(historical_volumes)
         
         # Check for spike
-        multiplier = float(rule.parameters.get('multiplier', 2.0))
+        params = self._get_rule_parameters(rule)
+        multiplier = float(params.get('multiplier', 2.0))
         if latest.volume >= avg_volume * multiplier:
             message = (
                 f"{stock.stock_code}: Volume spike detected - {latest.volume:,} "
@@ -422,8 +439,10 @@ class AlertEvaluator:
                 'stock_id': stock.stock_id,
                 'rule_id': rule.rule_id,
                 'alert_date': evaluation_date,
+                'alert_type': rule.rule_type,
                 'severity': rule.severity,
                 'message': message,
+                'trigger_value': float(latest.volume / avg_volume),
                 'metadata': {
                     'volume': int(latest.volume),
                     'avg_volume': int(avg_volume),
@@ -465,6 +484,42 @@ class AlertEvaluator:
         )
         
         return saved_count
+
+    def _get_rule_parameters(self, rule: AlertRule) -> Dict:
+        """Get rule parameters with backward-compatible fallbacks."""
+        raw_params = getattr(rule, 'parameters', None)
+
+        if isinstance(raw_params, dict):
+            return raw_params
+
+        if isinstance(raw_params, str) and raw_params.strip():
+            try:
+                parsed = json.loads(raw_params)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
+
+        params: Dict[str, float] = {}
+        if getattr(rule, 'threshold_value', None) is not None:
+            threshold_val = float(rule.threshold_value)
+            params['threshold'] = threshold_val
+            if rule.rule_type == 'RSI':
+                if 'OVERBOUGHT' in rule.rule_name.upper():
+                    params['overbought'] = threshold_val
+                elif 'OVERSOLD' in rule.rule_name.upper():
+                    params['oversold'] = threshold_val
+
+        condition_sql = getattr(rule, 'condition_sql', None)
+        if isinstance(condition_sql, str) and condition_sql.strip().startswith('{'):
+            try:
+                parsed = json.loads(condition_sql)
+                if isinstance(parsed, dict):
+                    params.update(parsed)
+            except Exception:
+                pass
+
+        return params
     
     def close(self):
         """Close database session."""

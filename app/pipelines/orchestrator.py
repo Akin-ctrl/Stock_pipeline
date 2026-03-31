@@ -2,18 +2,20 @@
 Pipeline orchestrator.
 
 Coordinates the complete ETL workflow:
-1. Fetch data from sources (NGX)
-2. Validate data quality
-3. Transform and standardize data
-4. Load into database (stocks, prices)
-5. Calculate technical indicators
-6. Evaluate alert rules
-7. Generate pipeline summary report
+1. Fetch data from Afrimarket API
+2. Stage raw data with source tracking
+3. Reconcile multi-source conflicts
+4. Transform and standardize data
+5. Load into database (stocks, prices)
+6. Calculate technical indicators
+7. Evaluate alert rules
+8. Generate pipeline summary report
 """
 
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import date, datetime, timedelta
 from dataclasses import dataclass
+from decimal import Decimal
 import pandas as pd
 
 from app.config.database import get_db
@@ -22,9 +24,11 @@ from app.repositories import (
     StockRepository, PriceRepository,
     IndicatorRepository, AlertRepository, RecommendationRepository
 )
+from app.repositories.staging_repository import StagingRepository
 from app.models import DimSector
-from app.services.data_sources import NGXDataSource
+from app.services.data_sources import AfrimarketDataSource
 from app.services.processors import DataValidator, DataTransformer
+from app.services.processors.reconciliation import ReconciliationEngine
 from app.services.indicators import IndicatorCalculator
 from app.services.alerts import AlertEvaluator, AlertNotifier
 from app.services.advisory import StockScreener
@@ -38,24 +42,26 @@ class PipelineConfig:
     Pipeline execution configuration.
     
     Attributes:
-        fetch_ngx: Whether to fetch NGX data
+        fetch_afrimarket: Whether to fetch data from Afrimarket source
+        use_staging: Whether to use staging workflow with reconciliation
         validate_data: Whether to run validation
         load_stocks: Whether to load/update stocks
-        load_prices: Whether to load prices
         calculate_indicators: Whether to calculate indicators
         evaluate_alerts: Whether to evaluate alert rules
         generate_recommendations: Whether to generate investment recommendations
+        recommendation_profile: Recommendation style (balanced, short_term, long_term)
         batch_size: Batch size for processing
         max_errors: Maximum errors before aborting
         lookback_days: Days of historical data to fetch
     """
-    fetch_ngx: bool = True
+    fetch_afrimarket: bool = True
+    use_staging: bool = True  # True = staging mode with reconciliation (recommended)
     validate_data: bool = True
     load_stocks: bool = True
-    load_prices: bool = True
     calculate_indicators: bool = True
     evaluate_alerts: bool = True
     generate_recommendations: bool = True
+    recommendation_profile: str = 'balanced'
     batch_size: int = 50
     max_errors: int = 10
     lookback_days: int = 30
@@ -70,12 +76,17 @@ class PipelineResult:
         success: Whether pipeline completed successfully
         execution_time: Total execution time in seconds
         stocks_processed: Number of stocks processed
-        prices_loaded: Number of prices loaded
+        prices_loaded: Number of prices loaded (v1) or promoted (v2)
         indicators_calculated: Number of indicators calculated
         alerts_generated: Number of alerts generated
+        recommendations_generated: Number of recommendations generated
         errors: List of error messages
         warnings: List of warning messages
         stage_times: Dict mapping stage name to execution time
+        staging_loaded: Number of records loaded to staging (v2)
+        reconciled_count: Number of records reconciled (v2)
+        conflicts_flagged: Number of conflicts flagged for review (v2)
+        avg_price_variance: Average price variance % (v2)
     """
     success: bool
     execution_time: float
@@ -87,6 +98,11 @@ class PipelineResult:
     errors: List[str]
     warnings: List[str]
     stage_times: Dict[str, float]
+    # Staging workflow metrics
+    staging_loaded: int = 0
+    reconciled_count: int = 0
+    conflicts_flagged: int = 0
+    avg_price_variance: float = 0.0
 
 
 class PipelineOrchestrator:
@@ -120,13 +136,29 @@ class PipelineOrchestrator:
         # Initialize database
         self.db = get_db()
         
-        # Initialize data sources
-        self.ngx_source = NGXDataSource() if self.config.fetch_ngx else None
+        # Initialize data sources - Afrimarket only
+        if AfrimarketDataSource is None:
+            raise ImportError(
+                "Afrimarket package not found. Install with: pip install afrimarket"
+            )
+        self.afrimarket_source = AfrimarketDataSource()
         
         # Initialize processors
         self.validator = None  # Will initialize with sectors
         self.transformer = DataTransformer()
         self.indicator_calculator = IndicatorCalculator()
+        
+        # Initialize staging and reconciliation (if enabled)
+        self.staging_repo = None  # Will initialize with session
+        self.reconciliation_engine = None
+        if self.config.use_staging:
+            # Initialize reconciliation engine with proper parameter names
+            # Repositories will be attached per-session during reconciliation
+            self.reconciliation_engine = ReconciliationEngine(
+                low_variance_threshold=1.0,
+                medium_variance_threshold=3.0,
+                preferred_source='afrimarket'
+            )
         
         # Initialize alert notifier
         self.alert_notifier = AlertNotifier() if (
@@ -138,6 +170,12 @@ class PipelineOrchestrator:
         self.errors: List[str] = []
         self.warnings: List[str] = []
         self.stage_times: Dict[str, float] = {}
+        
+        # Track staging metrics
+        self.staging_loaded = 0
+        self.reconciled_count = 0
+        self.conflicts_flagged = 0
+        self.avg_price_variance = 0.0
         
     def run(
         self,
@@ -174,25 +212,75 @@ class PipelineOrchestrator:
         self.warnings = []
         self.stage_times = {}
         
+        # Reset staging metrics
+        self.staging_loaded = 0
+        self.reconciled_count = 0
+        self.conflicts_flagged = 0
+        self.avg_price_variance = 0.0
+        
         stocks_processed = 0
         prices_loaded = 0
         indicators_calculated = 0
         alerts_generated = 0
         
         try:
-            # Stage 1: Fetch data
-            if self.config.fetch_ngx:
-                raw_data = self._fetch_data(execution_date, stock_codes)
-                self.logger.info(f"DEBUG: Fetched {len(raw_data)} rows from sources")
-                if raw_data.empty:
-                    self.logger.warning("No data fetched from sources")
-                    self.warnings.append("No data fetched from any source")
-                    return self._build_result(
-                        start_time, False, 0, 0, 0, 0
-                    )
+            # Choose workflow based on configuration
+            if self.config.use_staging:
+                # Staging mode: Dual sources → staging → reconcile → promote
+                result = self._run_staging_workflow(execution_date, stock_codes)
             else:
-                self.logger.info("Skipping data fetch (disabled in config)")
-                raw_data = pd.DataFrame()
+                # Direct mode: Single source → direct load (legacy)
+                result = self._run_direct_workflow(execution_date, stock_codes)
+            
+            self._log_summary(result)
+            return result
+            
+        except Exception as e:
+            self.logger.error(
+                "Pipeline execution failed",
+                error=e,
+                extra={"error": str(e)}
+            )
+            self.errors.append(f"Pipeline failure: {str(e)}")
+            
+            return self._build_result(
+                start_time, False, 0, 0, 0, 0
+            )
+    
+    def _run_direct_workflow(
+        self,
+        execution_date: date,
+        stock_codes: Optional[List[str]]
+    ) -> PipelineResult:
+        """
+        Direct workflow: Fetch → validate → transform → load.
+        
+        Legacy mode for fallback. Staging mode is recommended.
+        
+        Args:
+            execution_date: Date to run pipeline for
+            stock_codes: Specific stocks to process
+            
+        Returns:
+            PipelineResult with execution summary
+        """
+        start_time = datetime.now()
+        
+        stocks_processed = 0
+        prices_loaded = 0
+        indicators_calculated = 0
+        alerts_generated = 0
+        
+        try:
+            # Stage 1: Fetch data from NGX
+            raw_data = self._fetch_data(execution_date, stock_codes)
+            self.logger.info(f"Fetched {len(raw_data)} rows from NGX")
+            if raw_data.empty:
+                self.logger.warning("No data fetched from NGX")
+                self.warnings.append("No data fetched from NGX")
+                return self._build_result(
+                    start_time, False, 0, 0, 0, 0
+                )
             
             # Stage 2: Validate data
             if self.config.validate_data and not raw_data.empty:
@@ -215,8 +303,8 @@ class PipelineOrchestrator:
             if self.config.load_stocks and not transformed_data.empty:
                 stocks_processed = self._load_stocks(transformed_data)
             
-            # Stage 5: Load prices
-            if self.config.load_prices and not transformed_data.empty:
+            # Stage 5: Load prices directly
+            if not transformed_data.empty:
                 prices_loaded = self._load_prices(transformed_data)
             
             # Stage 6: Calculate indicators
@@ -251,17 +339,148 @@ class PipelineOrchestrator:
                 recommendations_generated
             )
             
-            self._log_summary(result)
+            return result
+            
+        except Exception as e:
+            self.errors.append(f"Direct workflow error: {str(e)}")
+            self.logger.error("Direct workflow failed", error=e)
+            return self._build_result(
+                start_time, False, stocks_processed, prices_loaded,
+                indicators_calculated, alerts_generated, recommendations_generated
+            )
+    
+    
+    def _run_staging_workflow(
+        self,
+        execution_date: date,
+        stock_codes: Optional[List[str]]
+    ) -> PipelineResult:
+        """
+        Staging workflow: Fetch → stage raw → reconcile → validate → transform → load.
+        
+        This workflow:
+        1. Fetches RAW data from BOTH NGX and Afrimarket
+        2. Loads RAW data to staging tables (no processing)
+        3. Pulls from staging and reconciles price differences between sources
+        4. Validates reconciled data (quality checks)
+        5. Transforms validated data (standardize, calculate fields)
+        6. Loads transformed data to production
+        7. Calculates indicators and alerts on production data
+        
+        Args:
+            execution_date: Date to run pipeline for
+            stock_codes: Specific stocks to process
+            
+        Returns:
+            PipelineResult with execution summary including reconciliation metrics
+        """
+        start_time = datetime.now()
+        
+        stocks_processed = 0
+        prices_loaded = 0
+        indicators_calculated = 0
+        alerts_generated = 0
+        
+        try:
+            # Stage 1: Fetch RAW data from BOTH sources (NGX + Afrimarket)
+            raw_data = self._fetch_data(execution_date, stock_codes)
+            self.logger.info(f"Fetched {len(raw_data)} rows from Afrimarket")
+            
+            # Check if we got data
+            if raw_data.empty:
+                self.logger.warning("No data fetched from Afrimarket")
+                self.warnings.append("No data fetched from Afrimarket")
+                # Continue with graceful degradation
+                if not self.config.fetch_afrimarket:
+                    return self._build_result(
+                        start_time, False, 0, 0, 0, 0
+                    )
+                # If we have the source configured, log but continue for now
+                self.logger.info("Continuing with empty dataset - will handle downstream")
+            
+            # Stage 2: Load stocks (update dimension if new stocks appear)
+            if self.config.load_stocks and not raw_data.empty:
+                stocks_processed = self._load_stocks(raw_data)
+            
+            # Stage 3: Load RAW data to staging
+            if not raw_data.empty:
+                self.staging_loaded = self._load_to_staging(raw_data, execution_date)
+                self.logger.info(f"Loaded {self.staging_loaded} raw records to staging")
+            
+            # Stage 4: Pull from staging and reconcile prices
+            # Reconcile ALL unreconciled dates, not just execution_date
+            # (Data sources may return different dates than execution_date)
+            unreconciled_dates = self._get_unreconciled_dates()
+            if unreconciled_dates:
+                self.logger.info(f"Found unreconciled data for {len(unreconciled_dates)} dates: {unreconciled_dates}")
+                self._reconcile_all_staging(unreconciled_dates)
+            else:
+                self.logger.info("No unreconciled records found in staging")
+            
+            # Stage 5: Pull reconciled data, validate and transform
+            reconciled_data = pd.DataFrame()
+            if self.reconciled_count > 0:
+                reconciled_data = self._get_all_reconciled_data()
+                
+                # Stage 5a: Skip validation for staging workflow
+                # Staging data lacks company_name/exchange (stored in dim_stocks)
+                # Stocks were already validated during _load_stocks phase
+                self.logger.info("Skipping validation for staging workflow (stocks already validated)")
+                validated_data = reconciled_data
+                
+                # Stage 5b: Transform validated data
+                if not validated_data.empty:
+                    transformed_data = self._transform_data(validated_data)
+                else:
+                    transformed_data = pd.DataFrame()
+            else:
+                transformed_data = pd.DataFrame()
+            
+            # Stage 6: Load transformed data to production
+            if not transformed_data.empty:
+                prices_loaded = self._load_prices(transformed_data)
+            
+            # Stage 7: Calculate indicators (on production data)
+            if self.config.calculate_indicators and prices_loaded > 0:
+                indicators_calculated = self._calculate_indicators(
+                    execution_date,
+                    stock_codes
+                )
+            
+            # Stage 8: Evaluate alerts
+            if self.config.evaluate_alerts:
+                alerts_generated = self._evaluate_alerts(execution_date)
+            
+            # Stage 9: Generate recommendations
+            recommendations_generated = 0
+            if self.config.generate_recommendations:
+                recommendations_generated = self._generate_recommendations(
+                    execution_date,
+                    stock_codes
+                )
+            
+            # Pipeline successful
+            success = len(self.errors) == 0
+            
+            result = self._build_result(
+                start_time,
+                success,
+                stocks_processed,
+                prices_loaded,
+                indicators_calculated,
+                alerts_generated,
+                recommendations_generated
+            )
             
             return result
             
         except Exception as e:
             self.logger.error(
-                f"Pipeline execution failed: {str(e)}",
-                extra={"error": str(e)},
-                exc_info=True
+                "Staging workflow failed",
+                error=e,
+                extra={"error": str(e)}
             )
-            self.errors.append(f"Pipeline failure: {str(e)}")
+            self.errors.append(f"Staging workflow failure: {str(e)}")
             
             return self._build_result(
                 start_time, False, 0, 0, 0, 0
@@ -275,27 +494,41 @@ class PipelineOrchestrator:
         """Fetch data from all configured sources."""
         stage_start = datetime.now()
         
+        self.logger.info("=" * 80)
+        self.logger.info("DEBUG: _fetch_data() METHOD CALLED!")
+        self.logger.info(f"DEBUG: execution_date={execution_date}, stock_codes={stock_codes}")
+        self.logger.info("=" * 80)
+        
         self.logger.info("Stage 1: Fetching data from sources")
+        self.logger.info(
+            f"Sources configured: Afrimarket={self.config.fetch_afrimarket} (available={self.afrimarket_source is not None})"
+        )
         
         all_data = []
         
-        # Fetch from NGX
-        if self.ngx_source:
+        # Fetch from Afrimarket (Afrimarket-only mode)
+        self.logger.info(
+            f"Afrimarket fetch check: fetch_afrimarket={self.config.fetch_afrimarket}, "
+            f"afrimarket_source={'initialized' if self.afrimarket_source else 'None'}"
+        )
+        if self.config.fetch_afrimarket and self.afrimarket_source:
             try:
-                self.logger.info("Fetching data from NGX")
-                ngx_data = self.ngx_source.fetch(execution_date)
+                self.logger.info("Fetching data from Afrimarket")
+                afm_data = self.afrimarket_source.fetch()
                 
-                if not ngx_data.empty:
-                    all_data.append(ngx_data)
+                if not afm_data.empty:
+                    # Add execution_date as price_date
+                    afm_data['price_date'] = execution_date
+                    all_data.append(afm_data)
                     self.logger.info(
-                        f"Fetched {len(ngx_data)} records from NGX",
-                        extra={"records": len(ngx_data), "source": "NGX"}
+                        f"Fetched {len(afm_data)} records from Afrimarket",
+                        extra={"records": len(afm_data), "source": "afrimarket"}
                     )
                 else:
-                    self.warnings.append("No data from NGX")
+                    self.warnings.append("No data from Afrimarket")
                     
             except Exception as e:
-                error_msg = f"NGX fetch failed: {str(e)}"
+                error_msg = f"Afrimarket fetch failed: {str(e)}"
                 self.logger.error(error_msg)
                 self.errors.append(error_msg)
         
@@ -313,6 +546,358 @@ class PipelineOrchestrator:
         self.stage_times['fetch_data'] = (datetime.now() - stage_start).total_seconds()
         
         return combined
+    
+    def _load_to_staging(
+        self,
+        data: pd.DataFrame,
+        execution_date: date
+    ) -> int:
+        """
+        Load data to staging tables.
+        
+        Args:
+            data: DataFrame with fetched data
+            execution_date: Date to load for
+            
+        Returns:
+            Number of records loaded to staging
+        """
+        stage_start = datetime.now()
+        
+        self.logger.info("Stage 3: Loading data to staging")
+        
+        try:
+            with self.db.get_session() as session:
+                self.staging_repo = StagingRepository(session)
+                
+                # Staging is raw: do NOT filter out unknown stocks here
+                staging_data = data.copy()
+                
+                if staging_data.empty:
+                    self.logger.warning("No records to load to staging")
+                    return 0
+                
+                # Ensure price_date column exists
+                if 'price_date' not in staging_data.columns:
+                    staging_data['price_date'] = execution_date
+                
+                # Group by source and load each
+                total_loaded = 0
+                for source in staging_data['source'].unique():
+                    source_data = staging_data[staging_data['source'] == source]
+                    loaded = self.staging_repo.bulk_insert_staging(
+                        df=source_data,
+                        source=str(source)
+                    )
+                    total_loaded += loaded
+                
+                session.commit()
+                
+                self.logger.info(
+                    f"Loaded {total_loaded} records to staging",
+                    extra={"loaded": total_loaded}
+                )
+                
+                self.stage_times['load_staging'] = (datetime.now() - stage_start).total_seconds()
+                return total_loaded
+                    
+        except Exception as e:
+            self.errors.append(f"Staging load error: {str(e)}")
+            self.logger.error("Staging load failed", error=e)
+            raise  # Re-raise to fail the DAG task
+    
+    def _get_unreconciled_dates(self) -> List[date]:
+        """
+        Get all distinct dates with unreconciled staging records.
+        
+        Returns:
+            List of dates
+        """
+        try:
+            with self.db.get_session() as session:
+                staging_repo = StagingRepository(session)
+                dates = staging_repo.get_unreconciled_dates()
+                return dates
+        except Exception as e:
+            self.logger.error(f"Failed to get unreconciled dates: {str(e)}")
+            return []
+    
+    def _get_unreconciled_count(self, execution_date: date) -> int:
+        """
+        Get count of unreconciled records for a given date.
+        
+        Args:
+            execution_date: Date to check
+            
+        Returns:
+            Number of unreconciled records
+        """
+        try:
+            with self.db.get_session() as session:
+                staging_repo = StagingRepository(session)
+                count = staging_repo.get_unreconciled_count(execution_date)
+                return count
+        except Exception as e:
+            self.logger.error(f"Failed to get unreconciled count: {str(e)}")
+            return 0
+
+    def _get_staging_count(self, price_date: date, source: str) -> int:
+        """
+        Get count of staging records for a date and source.
+
+        Args:
+            price_date: Trading date
+            source: Data source identifier
+
+        Returns:
+            Number of staging records
+        """
+        try:
+            with self.db.get_session() as session:
+                staging_repo = StagingRepository(session)
+                return staging_repo.count_by_date_source(price_date, source)
+        except Exception as e:
+            self.logger.error(f"Failed to get staging count: {str(e)}")
+            return 0
+    
+    def _reconcile_all_staging(self, dates: List[date]) -> None:
+        """
+        Reconcile prices for multiple dates in staging.
+        
+        Args:
+            dates: List of dates to reconcile
+        """
+        stage_start = datetime.now()
+        
+        self.logger.info(f"Stage 4: Reconciling staged prices for {len(dates)} dates")
+        
+        try:
+            with self.db.get_session() as session:
+                self.staging_repo = StagingRepository(session)
+                # Attach repositories for reconciliation within the active session
+                self.reconciliation_engine.staging_repo = self.staging_repo
+                self.reconciliation_engine.stock_repo = StockRepository(session)
+                
+                total_reconciled = 0
+                total_applied = 0
+                
+                # Reconcile each date
+                for price_date in dates:
+                    self.logger.info(f"Reconciling data for {price_date}")
+                    results = self.reconciliation_engine.reconcile_date(price_date)
+                    
+                    # Apply each reconciliation result
+                    for result in results:
+                        if self.reconciliation_engine.apply_reconciliation(result):
+                            total_applied += 1
+                        else:
+                            self.logger.warning(
+                                f"Failed to apply reconciliation for {result.stock_code} "
+                                f"on {result.price_date}"
+                            )
+                    
+                    total_reconciled += len(results)
+                    self.logger.info(
+                        f"Reconciled {len(results)} records for {price_date} "
+                        f"({total_applied}/{total_reconciled} applied)"
+                    )
+                
+                # Commit all changes
+                session.commit()
+                
+                self.reconciled_count = total_applied
+                self.logger.info(
+                    f"Total reconciled records across all dates: {self.reconciled_count}",
+                    extra={"reconciled_records": self.reconciled_count}
+                )
+                
+                # Raise exception if no records were reconciled but we expected some
+                if total_reconciled > 0 and total_applied == 0:
+                    raise RuntimeError(
+                        f"Reconciliation failed: {total_reconciled} records processed "
+                        f"but none applied successfully"
+                    )
+                
+        except Exception as e:
+            error_msg = f"Staging reconciliation failed: {str(e)}"
+            self.logger.error(error_msg, error=e)
+            self.errors.append(error_msg)
+            self.reconciled_count = 0
+            raise  # Re-raise to fail the DAG task
+        
+        self.stage_times['reconcile_staging'] = (datetime.now() - stage_start).total_seconds()
+    
+    def _reconcile_staging(self, execution_date: date) -> None:
+        """
+        Reconcile prices in staging.
+        
+        Args:
+            execution_date: Date to reconcile for
+        """
+        stage_start = datetime.now()
+        
+        self.logger.info("Stage 4: Reconciling staged prices")
+        
+        try:
+            with self.db.get_session() as session:
+                self.staging_repo = StagingRepository(session)
+                # Attach repositories for reconciliation within the active session
+                self.reconciliation_engine.staging_repo = self.staging_repo
+                self.reconciliation_engine.stock_repo = StockRepository(session)
+                
+                # Get reconciliation results for the date
+                results = self.reconciliation_engine.reconcile_date(execution_date)
+                
+                # Apply each reconciliation result
+                applied_count = 0
+                conflicts_flagged = 0
+                
+                for result in results:
+                    if self.reconciliation_engine.apply_reconciliation(result):
+                        applied_count += 1
+                        if result.conflict_severity in ['high', 'critical']:
+                            conflicts_flagged += 1
+                
+                session.commit()
+                
+                self.reconciled_count = applied_count
+                self.conflicts_flagged = conflicts_flagged
+                
+                self.logger.info(
+                    f"Reconciled {self.reconciled_count} records, "
+                    f"flagged {self.conflicts_flagged} conflicts, "
+                    f"avg variance: {self.avg_price_variance:.2f}%",
+                    extra={
+                        "reconciled": self.reconciled_count,
+                        "conflicts": self.conflicts_flagged,
+                        "avg_variance": self.avg_price_variance
+                    }
+                )
+                
+                # Log reconciliation stats
+                stats = self.reconciliation_engine.get_reconciliation_stats(execution_date)
+                
+                if stats:
+                    self.logger.info(
+                        f"Reconciliation breakdown: "
+                        f"{stats.get('by_severity', {}).get('low', 0)} low, "
+                        f"{stats.get('by_severity', {}).get('medium', 0)} medium, "
+                        f"{stats.get('by_severity', {}).get('high', 0)} high"
+                    )
+                
+                self.stage_times['reconcile'] = (datetime.now() - stage_start).total_seconds()
+                
+        except Exception as e:
+            self.errors.append(f"Reconciliation error: {str(e)}")
+            self.logger.error("Reconciliation failed", error=e)
+    
+    def _get_all_reconciled_data(self) -> pd.DataFrame:
+        """
+        Pull ALL reconciled data from staging (all dates) for validation and transformation.
+        
+        Returns:
+            DataFrame with reconciled price data
+        """
+        stage_start = datetime.now()
+        
+        self.logger.info("Stage 5: Pulling all reconciled data from staging")
+        
+        try:
+            with self.db.get_session() as session:
+                self.staging_repo = StagingRepository(session)
+                
+                # Get ALL reconciled staging records (no date filter)
+                staging_records = self.staging_repo.get_all_reconciled(limit=None)
+                
+                if not staging_records:
+                    self.logger.warning("No reconciled records in staging")
+                    return pd.DataFrame()
+                
+                # Convert to DataFrame
+                data = []
+                for record in staging_records:
+                    data.append({
+                        'stock_code': record.stock_code,
+                        'source': record.source,
+                        'price_date': record.price_date,
+                        'close_price': float(record.close_price) if record.close_price else None,
+                        'change_1d_pct': float(record.change_1d_pct) if record.change_1d_pct else None,
+                        'change_ytd_pct': float(record.change_ytd_pct) if record.change_ytd_pct else None,
+                        'volume': int(record.volume) if record.volume else None
+                    })
+                
+                df = pd.DataFrame(data)
+                
+                self.logger.info(
+                    f"Pulled {len(df)} reconciled records from staging (all dates)",
+                    extra={"records": len(df)}
+                )
+                
+                self.stage_times['get_reconciled_data'] = (datetime.now() - stage_start).total_seconds()
+                
+                return df
+                
+        except Exception as e:
+            self.errors.append(f"Get reconciled data error: {str(e)}")
+            self.logger.error("Failed to get reconciled data", error=e)
+            raise  # Re-raise to fail the DAG task
+    
+    def _get_reconciled_data(self, execution_date: date) -> pd.DataFrame:
+        """
+        Pull reconciled data from staging for validation and transformation.
+        
+        Args:
+            execution_date: Date to get reconciled data for
+            
+        Returns:
+            DataFrame with reconciled price data
+        """
+        stage_start = datetime.now()
+        
+        self.logger.info("Stage 5: Pulling reconciled data from staging")
+        
+        try:
+            with self.db.get_session() as session:
+                self.staging_repo = StagingRepository(session)
+                
+                # Get reconciled staging records
+                staging_records = self.staging_repo.get_by_date_reconciled(
+                    execution_date,
+                    reconciled_only=True
+                )
+                
+                if not staging_records:
+                    self.logger.warning("No reconciled records in staging")
+                    return pd.DataFrame()
+                
+                # Convert to DataFrame
+                data = []
+                for record in staging_records:
+                    data.append({
+                        'stock_code': record.stock_code,
+                        'source': record.source,
+                        'price_date': record.price_date,
+                        'close_price': float(record.close_price) if record.close_price else None,
+                        'change_1d_pct': float(record.change_1d_pct) if record.change_1d_pct else None,
+                        'change_ytd_pct': float(record.change_ytd_pct) if record.change_ytd_pct else None,
+                        'volume': int(record.volume) if record.volume else None
+                    })
+                
+                df = pd.DataFrame(data)
+                
+                self.logger.info(
+                    f"Pulled {len(df)} reconciled records from staging",
+                    extra={"records": len(df)}
+                )
+                
+                self.stage_times['get_reconciled_data'] = (datetime.now() - stage_start).total_seconds()
+                
+                return df
+                
+        except Exception as e:
+            self.errors.append(f"Get reconciled data error: {str(e)}")
+            self.logger.error("Failed to get reconciled data", error=e)
+            return pd.DataFrame()
     
     def _validate_data(self, data: pd.DataFrame) -> pd.DataFrame:
         """Validate data quality."""
@@ -393,8 +978,56 @@ class PipelineOrchestrator:
             
         except Exception as e:
             self.errors.append(f"Transformation error: {str(e)}")
-            self.logger.error(f"Transformation failed: {str(e)}")
-            return pd.DataFrame()
+            self.logger.error("Transformation failed", error=e)
+            raise  # Re-raise to fail the DAG task
+    
+    def _calculate_missing_changes(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculate missing change_1d_pct and change_ytd_pct values.
+        
+        - change_1d_pct: ((close - prev_close) / prev_close) * 100
+        - change_ytd_pct: ((close - year_start_close) / year_start_close) * 100
+        
+        Args:
+            data: DataFrame with price data grouped by stock
+            
+        Returns:
+            DataFrame with calculated values filled in
+        """
+        df = data.copy()
+        
+        # Ensure price_date is datetime
+        if not pd.api.types.is_datetime64_any_dtype(df['price_date']):
+            df['price_date'] = pd.to_datetime(df['price_date'])
+        
+        for stock_code in df['stock_code'].unique():
+            stock_mask = df['stock_code'] == stock_code
+            stock_data = df[stock_mask].sort_values('price_date')
+            
+            # Calculate change_1d_pct from previous day's close
+            prev_close = None
+            for idx, row in stock_data.iterrows():
+                if pd.isna(row['change_1d_pct']) or (isinstance(row['change_1d_pct'], (int, float)) and row['change_1d_pct'] == 0):
+                    if prev_close and prev_close > 0:
+                        calculated_change = ((row['close_price'] - prev_close) / prev_close) * 100
+                        df.loc[idx, 'change_1d_pct'] = round(calculated_change, 4)
+                    else:
+                        df.loc[idx, 'change_1d_pct'] = 0.0
+                prev_close = row['close_price']
+            
+            # Calculate change_ytd_pct from first day of year
+            year_start_prices = stock_data[stock_data['price_date'].dt.month == 1]
+            year_start_close = year_start_prices['close_price'].iloc[0] if len(year_start_prices) > 0 else stock_data['close_price'].iloc[0]
+            
+            for idx, row in stock_data.iterrows():
+                if pd.isna(row['change_ytd_pct']) or (isinstance(row['change_ytd_pct'], (int, float)) and row['change_ytd_pct'] == 0):
+                    if year_start_close and year_start_close > 0:
+                        calculated_ytd = ((row['close_price'] - year_start_close) / year_start_close) * 100
+                        df.loc[idx, 'change_ytd_pct'] = round(calculated_ytd, 4)
+                    else:
+                        df.loc[idx, 'change_ytd_pct'] = 0.0
+        
+        return df
     
     def _load_stocks(self, data: pd.DataFrame) -> int:
         """Load/update stock records."""
@@ -409,7 +1042,15 @@ class PipelineOrchestrator:
                 stock_repo = StockRepository(session)
                 
                 # Get unique stocks from data
-                unique_stocks = data[['stock_code', 'company_name', 'sector', 'exchange']].drop_duplicates()
+                # Note: Some sources (Afrimarket) don't provide sector - use existing or default
+                required_cols = ['stock_code', 'company_name', 'exchange']
+                unique_stocks = data[required_cols].drop_duplicates()
+                
+                # Add sector column if missing (use None for lookup)
+                if 'sector' not in data.columns:
+                    unique_stocks['sector'] = None
+                else:
+                    unique_stocks = data[required_cols + ['sector']].drop_duplicates()
                 
                 for _, row in unique_stocks.iterrows():
                     try:
@@ -417,23 +1058,26 @@ class PipelineOrchestrator:
                         stock = stock_repo.get_by_code(row['stock_code'])
                         
                         if stock:
-                            # Update if needed
+                            # Update if needed (only company name, keep existing sector)
                             if stock.company_name != row['company_name']:
-                                stock_repo.update_stock(
-                                    stock.stock_id,
+                                stock_repo.update(
+                                    stock,
                                     company_name=row['company_name']
                                 )
                                 loaded_count += 1
                         else:
+                            # New stock - need sector
+                            sector_name = row.get('sector') or 'Unknown'  # Default sector if not provided
+                            
                             # Get or create sector
                             sector = session.query(DimSector).filter(
-                                DimSector.sector_name == row['sector']
+                                DimSector.sector_name == sector_name
                             ).first()
                             
                             if not sector:
                                 sector = DimSector(
-                                    sector_name=row['sector'],
-                                    description=f"{row['sector']} sector"
+                                    sector_name=sector_name,
+                                    description=f"{sector_name} sector"
                                 )
                                 session.add(sector)
                                 session.flush()  # Get sector_id
@@ -477,6 +1121,9 @@ class PipelineOrchestrator:
         loaded_count = 0
         
         try:
+            # Calculate missing change_1d_pct and change_ytd_pct
+            data = self._calculate_missing_changes(data)
+            
             with self.db.get_session() as session:
                 stock_repo = StockRepository(session)
                 price_repo = PriceRepository(session)
@@ -495,12 +1142,11 @@ class PipelineOrchestrator:
                                 self.warnings.append(f"Stock not found: {row['stock_code']}")
                                 continue
                             
-                            # Calculate data quality based on available NGX fields
+                            # Calculate data quality based on available fields
                             has_complete = all([
                                 pd.notna(row.get('close_price')),
                                 pd.notna(row.get('change_1d_pct')),
-                                pd.notna(row.get('change_ytd_pct')),
-                                pd.notna(row.get('market_cap'))
+                                pd.notna(row.get('change_ytd_pct'))
                             ])
                             
                             # Determine quality flag
@@ -521,7 +1167,6 @@ class PipelineOrchestrator:
                                 'close_price': row['close_price'],
                                 'change_1d_pct': row.get('change_1d_pct'),
                                 'change_ytd_pct': row.get('change_ytd_pct'),
-                                'market_cap': row.get('market_cap'),
                                 'source': row.get('source', 'unknown'),
                                 'data_quality_flag': quality_flag,
                                 'has_complete_data': complete_data
@@ -550,12 +1195,18 @@ class PipelineOrchestrator:
             
             self.stage_times['load_prices'] = (datetime.now() - stage_start).total_seconds()
             
+            # Fail if no prices were loaded from non-empty data
+            if loaded_count == 0 and len(data) > 0:
+                raise RuntimeError(
+                    f"Price loading failed: 0 prices loaded from {len(data)} input records"
+                )
+            
             return loaded_count
             
         except Exception as e:
             self.errors.append(f"Price loading error: {str(e)}")
-            self.logger.error(f"Price loading failed: {str(e)}")
-            return 0
+            self.logger.error("Price loading failed", error=e)
+            raise  # Re-raise to fail the DAG task
     
     def _calculate_indicators(
         self,
@@ -604,10 +1255,7 @@ class PipelineOrchestrator:
                         # Convert to DataFrame
                         price_data = [{
                             'price_date': p.price_date,
-                            'close_price': float(p.close_price),
-                            'high_price': float(p.high_price) if p.high_price else None,
-                            'low_price': float(p.low_price) if p.low_price else None,
-                            'volume': int(p.volume) if p.volume else None
+                            'close_price': float(p.close_price)
                         } for p in prices]
                         
                         # Calculate indicators
@@ -799,15 +1447,17 @@ class PipelineOrchestrator:
         
         try:
             with self.db.get_session() as session:
-                screener = StockScreener(session)
+                screener = StockScreener(
+                    session,
+                    strategy_profile=self.config.recommendation_profile,
+                )
                 rec_repo = RecommendationRepository(session)
                 
                 # Generate recommendations
                 recommendations = screener.generate_recommendations(
                     recommendation_date=execution_date,
                     stock_codes=stock_codes,
-                    min_score=40.0,  # Minimum acceptable score
-                    min_confidence=0.5  # Minimum confidence
+                    strategy_profile=self.config.recommendation_profile,
                 )
                 
                 if recommendations:
@@ -852,8 +1502,8 @@ class PipelineOrchestrator:
         except Exception as e:
             self.errors.append(f"Recommendation generation error: {str(e)}")
             self.logger.error(
-                f"Recommendation generation failed: {str(e)}", 
-                exc_info=True
+                "Recommendation generation failed",
+                error=e
             )
             return 0
     
@@ -867,7 +1517,7 @@ class PipelineOrchestrator:
         alerts: int,
         recommendations: int = 0
     ) -> PipelineResult:
-        """Build pipeline result."""
+        """Build pipeline result with staging metrics."""
         execution_time = (datetime.now() - start_time).total_seconds()
         
         return PipelineResult(
@@ -880,7 +1530,11 @@ class PipelineOrchestrator:
             recommendations_generated=recommendations,
             errors=self.errors,
             warnings=self.warnings,
-            stage_times=self.stage_times
+            stage_times=self.stage_times,
+            staging_loaded=self.staging_loaded,
+            reconciled_count=self.reconciled_count,
+            conflicts_flagged=self.conflicts_flagged,
+            avg_price_variance=self.avg_price_variance
         )
     
     def _log_summary(self, result: PipelineResult):
@@ -895,6 +1549,14 @@ class PipelineOrchestrator:
         self.logger.info(f"Indicators calculated: {result.indicators_calculated}")
         self.logger.info(f"Alerts generated: {result.alerts_generated}")
         self.logger.info(f"Recommendations generated: {result.recommendations_generated}")
+        
+        # Log staging metrics if applicable
+        if result.staging_loaded > 0:
+            self.logger.info(f"\nReconciliation Metrics:")
+            self.logger.info(f"  Staging loaded: {result.staging_loaded}")
+            self.logger.info(f"  Reconciled: {result.reconciled_count}")
+            self.logger.info(f"  Conflicts flagged: {result.conflicts_flagged}")
+            self.logger.info(f"  Avg variance: {result.avg_price_variance:.2f}%")
         
         if result.stage_times:
             self.logger.info("\nStage execution times:")

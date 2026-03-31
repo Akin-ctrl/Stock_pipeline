@@ -176,18 +176,18 @@ Stock_pipeline/
 ## Business Value
 
 **For Investors:**
-- ✅ Early opportunity detection before manual analysis
-- ✅ Risk management with volatility monitoring
-- ✅ Time savings (automated analysis of 154 stocks)
-- ✅ Data-driven decisions backed by technical signals
-- ✅ Comprehensive coverage of all NGX sectors
+- Early opportunity detection before manual analysis
+-  Risk management with volatility monitoring
+-  Time savings (automated analysis of 154 stocks)
+-  Data-driven decisions backed by technical signals
+-  Comprehensive coverage of all NGX sectors
 
 **Technical Excellence:**
-- ✅ Production-ready (100% validated)
-- ✅ Scalable (PostgreSQL star schema, 500+ stock capacity)
-- ✅ Maintainable (Clean OOP, comprehensive docs)
-- ✅ Portable (Docker Compose deployment)
-- ✅ Cloud-ready (Deploy in 30 minutes)
+-  Production-ready (100% validated)
+-  Scalable (PostgreSQL star schema, 500+ stock capacity)
+-  Maintainable (Clean OOP, comprehensive docs)
+-  Portable (Docker Compose deployment)
+-  Cloud-ready (Deploy in 30 minutes)
 
 ---
 
@@ -388,10 +388,10 @@ docker compose exec app python -m app.cli generate-report --type weekly
 # See: docs/3_DEPLOYMENT_GUIDE.md
 
 # Benefits:
-# ✅ Runs without laptop on
-# ✅ 99.9% uptime
-# ✅ Remote access from anywhere
-# ✅ Professional infrastructure
+#  Runs without laptop on
+#  99.9% uptime
+#  Remote access from anywhere
+#  Professional infrastructure
 ```
 
 ---

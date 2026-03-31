@@ -166,7 +166,9 @@ class AlertRepository(BaseRepository[AlertHistory]):
         alert_type: str,
         severity: str,
         message: str,
-        trigger_value: Optional[float] = None
+        trigger_value: Optional[float] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **_: Any,
     ) -> AlertHistory:
         """
         Create a new alert record.
@@ -179,17 +181,25 @@ class AlertRepository(BaseRepository[AlertHistory]):
             severity: 'INFO', 'WARNING', or 'CRITICAL'
             message: Alert message
             trigger_value: Value that triggered alert
+            metadata: Optional metadata payload (stored inline in message)
             
         Returns:
             Created alert
         """
+        final_message = message
+        if metadata:
+            metadata_text = ", ".join(
+                f"{key}={value}" for key, value in metadata.items()
+            )
+            final_message = f"{message} | {metadata_text}"
+
         return self.create(
             stock_id=stock_id,
             rule_id=rule_id,
             alert_date=alert_date,
             alert_type=alert_type,
             severity=severity,
-            message=message,
+            message=final_message,
             trigger_value=trigger_value,
             is_resolved=False
         )

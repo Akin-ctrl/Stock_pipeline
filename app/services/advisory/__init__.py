@@ -13,7 +13,7 @@ from app.services.advisory.scoring import (
     StockScorer, StockScore, ScoreCategory
 )
 from app.services.advisory.advisor import (
-    StockScreener, StockRecommendation
+    StockScreener, StockRecommendation, RecommendationProfile, RecommendationProfileConfig
 )
 
 __all__ = [
@@ -25,4 +25,6 @@ __all__ = [
     'ScoreCategory',
     'StockScreener',
     'StockRecommendation',
+    'RecommendationProfile',
+    'RecommendationProfileConfig',
 ]

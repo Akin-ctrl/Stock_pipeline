@@ -1,4 +1,4 @@
-# 📚 Documentation Map
+# Documentation Map
 
 ## Production Documentation (Current - Use These)
 
@@ -99,11 +99,11 @@ Old scattered documentation moved to `../archive/old_docs/`:
 
 ## Documentation Principles
 
-✅ **Single source of truth** - One canonical location per topic  
-✅ **Production-focused** - Reflects actual NGX-only implementation  
-✅ **Action-oriented** - Clear commands and examples  
-✅ **Comprehensive** - From beginner to advanced  
-✅ **Maintained** - Updated with every major change  
+ **Single source of truth** - One canonical location per topic  
+ **Production-focused** - Reflects actual NGX-only implementation  
+ **Action-oriented** - Clear commands and examples  
+**Comprehensive** - From beginner to advanced  
+**Maintained** - Updated with every major change  
 
 ---
 

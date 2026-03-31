@@ -127,10 +127,6 @@ class DataTransformer:
         if 'sector' in df.columns:
             df['sector'] = df['sector'].fillna('Unknown')
         
-        # Fill missing market cap with empty string
-        if 'market_cap' in df.columns:
-            df['market_cap'] = df['market_cap'].fillna('')
-        
         return df
     
     def calculate_ytd_change(
