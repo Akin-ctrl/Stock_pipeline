@@ -5,7 +5,8 @@ from datetime import date, timedelta
 from decimal import Decimal
 from sqlalchemy.orm import Session
 
-from app.models.staging import StagingDailyPrice
+from app.models import DimSector, DimStock, FactDailyPrice
+from app.models.staging import StagingDailyPrice, StagingAuditLog
 from app.repositories.staging_repository import StagingRepository
 
 
@@ -208,3 +209,124 @@ class TestStagingRepository:
         all_records = repo.get_all(price_date=date(2026, 2, 10), reconciled_only=False)
         test_stocks = [r for r in all_records if r.stock_code in ['TESTSTOCK', 'TESTSTOCK2']]
         assert len(test_stocks) == 2
+
+    def test_get_canonical_reconciled_for_fact_sync_prefers_audit_selection(
+        self,
+        db_session: Session,
+    ):
+        """Canonical fact sync should honor the latest audit decision per stock/date."""
+        sector = DimSector(sector_name="Industrial Goods")
+        db_session.add(sector)
+        db_session.flush()
+
+        stock = DimStock(
+            stock_code="DANGCEM",
+            company_name="Dangote Cement Plc",
+            sector_id=sector.sector_id,
+            exchange="NGX",
+            is_active=True,
+        )
+        db_session.add(stock)
+        db_session.flush()
+
+        db_session.add_all([
+            StagingDailyPrice(
+                stock_code="DANGCEM",
+                price_date=date(2026, 2, 8),
+                source="ngx",
+                close_price=Decimal("445.00"),
+                change_1d_pct=Decimal("1.25"),
+                change_ytd_pct=Decimal("9.50"),
+                volume=1000,
+                reconciled=True,
+            ),
+            StagingDailyPrice(
+                stock_code="DANGCEM",
+                price_date=date(2026, 2, 8),
+                source="afrimarket",
+                close_price=Decimal("446.00"),
+                change_1d_pct=Decimal("1.35"),
+                change_ytd_pct=Decimal("9.80"),
+                volume=1200,
+                reconciled=True,
+            ),
+            StagingAuditLog(
+                stock_code="DANGCEM",
+                price_date=date(2026, 2, 8),
+                sources=["ngx", "afrimarket"],
+                prices=[Decimal("445.00"), Decimal("446.00")],
+                resolution_method="prefer_source",
+                selected_price=Decimal("446.00"),
+                selected_source="afrimarket",
+                conflict_severity="medium",
+            ),
+        ])
+        db_session.commit()
+
+        repo = StagingRepository(db_session)
+        canonical_rows = repo.get_canonical_reconciled_for_fact_sync()
+
+        assert len(canonical_rows) == 1
+        assert canonical_rows[0]["stock_code"] == "DANGCEM"
+        assert canonical_rows[0]["price_date"] == date(2026, 2, 8)
+        assert canonical_rows[0]["source"] == "afrimarket"
+        assert canonical_rows[0]["close_price"] == Decimal("446.00")
+
+    def test_get_canonical_reconciled_for_fact_sync_only_missing_from_fact(
+        self,
+        db_session: Session,
+    ):
+        """Rows already promoted to fact_daily_prices should be excluded when requested."""
+        sector = DimSector(sector_name="Banking")
+        db_session.add(sector)
+        db_session.flush()
+
+        stock = DimStock(
+            stock_code="GTCO",
+            company_name="Guaranty Trust Holding Company Plc",
+            sector_id=sector.sector_id,
+            exchange="NGX",
+            is_active=True,
+        )
+        db_session.add(stock)
+        db_session.flush()
+
+        db_session.add_all([
+            StagingDailyPrice(
+                stock_code="GTCO",
+                price_date=date(2026, 2, 9),
+                source="ngx",
+                close_price=Decimal("50.00"),
+                reconciled=True,
+            ),
+            StagingAuditLog(
+                stock_code="GTCO",
+                price_date=date(2026, 2, 9),
+                sources=["ngx"],
+                prices=[Decimal("50.00")],
+                resolution_method="single_source",
+                selected_price=Decimal("50.00"),
+                selected_source="ngx",
+                conflict_severity="low",
+            ),
+            FactDailyPrice(
+                stock_id=stock.stock_id,
+                price_date=date(2026, 2, 9),
+                close_price=Decimal("50.00"),
+                source="ngx",
+                source_count=1,
+                bar_status="RECONCILED",
+                is_official=False,
+                confidence_score=Decimal("85.00"),
+                data_quality_flag="GOOD",
+                has_complete_data=True,
+            ),
+        ])
+        db_session.commit()
+
+        repo = StagingRepository(db_session)
+        canonical_rows = repo.get_canonical_reconciled_for_fact_sync(
+            only_missing_from_fact=True
+        )
+
+        assert canonical_rows == []

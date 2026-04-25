@@ -30,6 +30,7 @@ class ReconciliationResult:
     resolution_method: str
     conflict_severity: str
     notes: Optional[str] = None
+    staging_ids: Optional[List[int]] = None
 
 
 class ReconciliationEngine:
@@ -177,7 +178,8 @@ class ReconciliationEngine:
             selected_source=selected_source,
             resolution_method=resolution_method,
             conflict_severity=conflict_severity,
-            notes=notes
+            notes=notes,
+            staging_ids=[record.staging_id for record in staging_records]
         )
         
         self.logger.debug(
@@ -202,48 +204,22 @@ class ReconciliationEngine:
             True if successful, False otherwise
         """
         try:
-            # Get stock ID
-            stock = self.stock_repo.get_by_code(result.stock_code)
-            if not stock:
-                self.logger.error(f"Stock not found: {result.stock_code}")
-                return False
-            
-            # Get staging records
-            staging_records = (
-                self.staging_repo.session.query(StagingDailyPrice)
-                .filter(
-                    StagingDailyPrice.stock_code == result.stock_code,
-                    StagingDailyPrice.price_date == result.price_date,
-                    StagingDailyPrice.reconciled == False
-                )
-                .all()
-            )
-            
-            if not staging_records:
+            if not result.staging_ids:
                 self.logger.warning(
-                    f"No staging records found for {result.stock_code} on {result.price_date}"
+                    f"No staging IDs found for {result.stock_code} on {result.price_date}"
                 )
                 return False
-            
-            # Find the record with selected price (or first if averaged)
-            selected_record = None
+
             if result.resolution_method == 'average':
-                # For averaged prices, use first record and update price
-                selected_record = staging_records[0]
-                selected_record.close_price = result.selected_price
-            else:
-                # Find the record from selected source
-                for record in staging_records:
-                    if record.source == result.selected_source:
-                        selected_record = record
-                        break
-                
-                if not selected_record:
-                    selected_record = staging_records[0]
-            
-            # Update selected record with final price if averaged
-            if result.resolution_method == 'average':
-                selected_record.close_price = result.selected_price
+                selected_id = result.staging_ids[0]
+                (
+                    self.staging_repo.session.query(StagingDailyPrice)
+                    .filter(StagingDailyPrice.staging_id == selected_id)
+                    .update(
+                        {'close_price': result.selected_price},
+                        synchronize_session=False
+                    )
+                )
             
             # Create audit log
             self.staging_repo.create_audit_log(
@@ -255,12 +231,12 @@ class ReconciliationEngine:
                 selected_price=result.selected_price,
                 selected_source=result.selected_source,
                 conflict_severity=result.conflict_severity,
-                notes=result.notes
+                notes=result.notes,
+                commit=False
             )
             
             # Mark staging records as reconciled
-            staging_ids = [r.staging_id for r in staging_records]
-            self.staging_repo.mark_reconciled(staging_ids, result.notes)
+            self.staging_repo.mark_reconciled(result.staging_ids, result.notes, commit=False)
             
             return True
             
@@ -361,7 +337,8 @@ class ReconciliationEngine:
             selected_source=staging_record.source,
             resolution_method='single_source',
             conflict_severity='low',
-            notes=f"Single source: {staging_record.source}"
+            notes=f"Single source: {staging_record.source}",
+            staging_ids=[staging_record.staging_id]
         )
         
         return result

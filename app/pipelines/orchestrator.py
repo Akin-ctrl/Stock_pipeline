@@ -22,10 +22,10 @@ from app.config.database import get_db
 from app.config.settings import Settings
 from app.repositories import (
     StockRepository, PriceRepository,
-    IndicatorRepository, AlertRepository, RecommendationRepository
+    IndicatorRepository, AlertRepository, RecommendationRepository,
 )
 from app.repositories.staging_repository import StagingRepository
-from app.models import DimSector
+from app.models import DimSector, DimStock
 from app.services.data_sources import AfrimarketDataSource
 from app.services.processors import DataValidator, DataTransformer
 from app.services.processors.reconciliation import ReconciliationEngine
@@ -49,7 +49,7 @@ class PipelineConfig:
         calculate_indicators: Whether to calculate indicators
         evaluate_alerts: Whether to evaluate alert rules
         generate_recommendations: Whether to generate investment recommendations
-        recommendation_profile: Recommendation style (balanced, short_term, long_term)
+        recommendation_profile: Recommendation style (steady_20p_10d)
         batch_size: Batch size for processing
         max_errors: Maximum errors before aborting
         lookback_days: Days of historical data to fetch
@@ -58,10 +58,11 @@ class PipelineConfig:
     use_staging: bool = True  # True = staging mode with reconciliation (recommended)
     validate_data: bool = True
     load_stocks: bool = True
+    load_prices: bool = True
     calculate_indicators: bool = True
     evaluate_alerts: bool = True
     generate_recommendations: bool = True
-    recommendation_profile: str = 'balanced'
+    recommendation_profile: str = 'steady_20p_10d'
     batch_size: int = 50
     max_errors: int = 10
     lookback_days: int = 30
@@ -176,6 +177,7 @@ class PipelineOrchestrator:
         self.reconciled_count = 0
         self.conflicts_flagged = 0
         self.avg_price_variance = 0.0
+        self.reconciliation_window_start: Optional[datetime] = None
         
     def run(
         self,
@@ -217,11 +219,13 @@ class PipelineOrchestrator:
         self.reconciled_count = 0
         self.conflicts_flagged = 0
         self.avg_price_variance = 0.0
+        self.reconciliation_window_start = None
         
         stocks_processed = 0
         prices_loaded = 0
         indicators_calculated = 0
         alerts_generated = 0
+        analysis_date = execution_date
         
         try:
             # Choose workflow based on configuration
@@ -304,25 +308,26 @@ class PipelineOrchestrator:
                 stocks_processed = self._load_stocks(transformed_data)
             
             # Stage 5: Load prices directly
-            if not transformed_data.empty:
+            if self.config.load_prices and not transformed_data.empty:
                 prices_loaded = self._load_prices(transformed_data)
+                analysis_date = pd.to_datetime(transformed_data['price_date']).dt.date.max()
             
             # Stage 6: Calculate indicators
             if self.config.calculate_indicators:
                 indicators_calculated = self._calculate_indicators(
-                    execution_date,
+                    analysis_date,
                     stock_codes
                 )
             
             # Stage 7: Evaluate alerts
             if self.config.evaluate_alerts:
-                alerts_generated = self._evaluate_alerts(execution_date)
+                alerts_generated = self._evaluate_alerts(analysis_date)
             
             # Stage 8: Generate recommendations
             recommendations_generated = 0
             if self.config.generate_recommendations:
                 recommendations_generated = self._generate_recommendations(
-                    execution_date,
+                    analysis_date,
                     stock_codes
                 )
             
@@ -380,6 +385,7 @@ class PipelineOrchestrator:
         prices_loaded = 0
         indicators_calculated = 0
         alerts_generated = 0
+        analysis_date = execution_date
         
         try:
             # Stage 1: Fetch RAW data from BOTH sources (NGX + Afrimarket)
@@ -413,49 +419,49 @@ class PipelineOrchestrator:
             unreconciled_dates = self._get_unreconciled_dates()
             if unreconciled_dates:
                 self.logger.info(f"Found unreconciled data for {len(unreconciled_dates)} dates: {unreconciled_dates}")
+                self.reconciliation_window_start = datetime.now()
                 self._reconcile_all_staging(unreconciled_dates)
             else:
                 self.logger.info("No unreconciled records found in staging")
             
             # Stage 5: Pull reconciled data, validate and transform
-            reconciled_data = pd.DataFrame()
-            if self.reconciled_count > 0:
-                reconciled_data = self._get_all_reconciled_data()
-                
-                # Stage 5a: Skip validation for staging workflow
-                # Staging data lacks company_name/exchange (stored in dim_stocks)
-                # Stocks were already validated during _load_stocks phase
+            reconciled_data = self._get_fact_sync_data(
+                promoted_after=self.reconciliation_window_start
+            )
+
+            # Stage 5a: Skip validation for staging workflow
+            # Staging data lacks company_name/exchange (stored in dim_stocks)
+            # Stocks were already validated during _load_stocks phase
+            if not reconciled_data.empty:
                 self.logger.info("Skipping validation for staging workflow (stocks already validated)")
                 validated_data = reconciled_data
-                
+
                 # Stage 5b: Transform validated data
-                if not validated_data.empty:
-                    transformed_data = self._transform_data(validated_data)
-                else:
-                    transformed_data = pd.DataFrame()
+                transformed_data = self._transform_data(validated_data)
             else:
                 transformed_data = pd.DataFrame()
             
             # Stage 6: Load transformed data to production
-            if not transformed_data.empty:
+            if self.config.load_prices and not transformed_data.empty:
                 prices_loaded = self._load_prices(transformed_data)
+                analysis_date = pd.to_datetime(transformed_data['price_date']).dt.date.max()
             
             # Stage 7: Calculate indicators (on production data)
             if self.config.calculate_indicators and prices_loaded > 0:
                 indicators_calculated = self._calculate_indicators(
-                    execution_date,
+                    analysis_date,
                     stock_codes
                 )
             
             # Stage 8: Evaluate alerts
             if self.config.evaluate_alerts:
-                alerts_generated = self._evaluate_alerts(execution_date)
+                alerts_generated = self._evaluate_alerts(analysis_date)
             
             # Stage 9: Generate recommendations
             recommendations_generated = 0
             if self.config.generate_recommendations:
                 recommendations_generated = self._generate_recommendations(
-                    execution_date,
+                    analysis_date,
                     stock_codes
                 )
             
@@ -544,7 +550,7 @@ class PipelineOrchestrator:
             self.logger.warning("No data from any source - all_data list is empty")
         
         self.stage_times['fetch_data'] = (datetime.now() - stage_start).total_seconds()
-        
+
         return combined
     
     def _load_to_staging(
@@ -820,10 +826,10 @@ class PipelineOrchestrator:
                         'stock_code': record.stock_code,
                         'source': record.source,
                         'price_date': record.price_date,
-                        'close_price': float(record.close_price) if record.close_price else None,
-                        'change_1d_pct': float(record.change_1d_pct) if record.change_1d_pct else None,
-                        'change_ytd_pct': float(record.change_ytd_pct) if record.change_ytd_pct else None,
-                        'volume': int(record.volume) if record.volume else None
+                        'close_price': float(record.close_price) if record.close_price is not None else None,
+                        'change_1d_pct': float(record.change_1d_pct) if record.change_1d_pct is not None else None,
+                        'change_ytd_pct': float(record.change_ytd_pct) if record.change_ytd_pct is not None else None,
+                        'volume': int(record.volume) if record.volume is not None else None
                     })
                 
                 df = pd.DataFrame(data)
@@ -841,6 +847,171 @@ class PipelineOrchestrator:
             self.errors.append(f"Get reconciled data error: {str(e)}")
             self.logger.error("Failed to get reconciled data", error=e)
             raise  # Re-raise to fail the DAG task
+
+    def _fact_sync_rows_to_dataframe(self, rows: List[Any]) -> pd.DataFrame:
+        """Convert canonical fact-sync rows into the narrow downstream dataframe shape."""
+        if not rows:
+            return pd.DataFrame()
+
+        data = []
+        for row in rows:
+            if isinstance(row, dict):
+                stock_code = row.get('stock_code')
+                source = row.get('source')
+                price_date = row.get('price_date')
+                close_price = row.get('close_price')
+                change_1d_pct = row.get('change_1d_pct')
+                change_ytd_pct = row.get('change_ytd_pct')
+                volume = row.get('volume')
+            else:
+                stock_code = row.stock_code
+                source = row.source
+                price_date = row.price_date
+                close_price = row.close_price
+                change_1d_pct = row.change_1d_pct
+                change_ytd_pct = row.change_ytd_pct
+                volume = row.volume
+
+            data.append({
+                'stock_code': stock_code,
+                'source': source,
+                'price_date': price_date,
+                'close_price': float(close_price) if close_price is not None else None,
+                'change_1d_pct': float(change_1d_pct) if change_1d_pct is not None else None,
+                'change_ytd_pct': float(change_ytd_pct) if change_ytd_pct is not None else None,
+                'volume': int(volume) if volume is not None else None,
+            })
+
+        return pd.DataFrame(data)
+
+    def _get_recently_reconciled_data(
+        self,
+        promoted_after: Optional[datetime] = None,
+    ) -> pd.DataFrame:
+        """
+        Pull only the staging records promoted during the current pipeline run.
+
+        Returns:
+            DataFrame with recently reconciled price data
+        """
+        stage_start = datetime.now()
+
+        self.logger.info("Stage 5: Pulling recently reconciled data from staging")
+
+        effective_start = promoted_after or self.reconciliation_window_start
+        if effective_start is None:
+            self.logger.warning("Reconciliation window start not set; no recent staging data to pull")
+            return pd.DataFrame()
+
+        try:
+            with self.db.get_session() as session:
+                self.staging_repo = StagingRepository(session)
+                canonical_rows = self.staging_repo.get_canonical_reconciled_for_fact_sync(
+                    promoted_after=effective_start,
+                )
+
+                if not canonical_rows:
+                    self.logger.warning("No recently reconciled records in staging")
+                    return pd.DataFrame()
+
+                df = self._fact_sync_rows_to_dataframe(canonical_rows)
+
+                self.logger.info(
+                    f"Pulled {len(df)} recently reconciled records from staging",
+                    extra={"records": len(df)}
+                )
+
+                self.stage_times['get_reconciled_data'] = (datetime.now() - stage_start).total_seconds()
+
+                return df
+
+        except Exception as e:
+            self.errors.append(f"Get recent reconciled data error: {str(e)}")
+            self.logger.error("Failed to get recently reconciled data", error=e)
+            raise
+
+    def _get_pending_fact_promotion_data(
+        self,
+        promoted_after: Optional[datetime] = None,
+        price_dates: Optional[List[date]] = None,
+    ) -> pd.DataFrame:
+        """
+        Pull reconciled staging rows whose stock/date pair is still missing from fact_daily_prices.
+
+        This keeps daily runs incremental while also rescuing historical rows that
+        were reconciled in staging but never promoted downstream.
+        """
+        stage_start = datetime.now()
+
+        self.logger.info("Stage 5: Pulling reconciled rows pending fact promotion")
+
+        try:
+            with self.db.get_session() as session:
+                self.staging_repo = StagingRepository(session)
+                canonical_rows = self.staging_repo.get_canonical_reconciled_for_fact_sync(
+                    promoted_after=promoted_after,
+                    price_dates=price_dates,
+                    only_missing_from_fact=True,
+                )
+
+                if not canonical_rows:
+                    self.logger.warning("No reconciled staging rows are pending fact promotion")
+                    return pd.DataFrame()
+
+                df = self._fact_sync_rows_to_dataframe(canonical_rows)
+
+                self.logger.info(
+                    f"Pulled {len(df)} reconciled rows pending fact promotion",
+                    extra={"records": len(df)}
+                )
+
+                self.stage_times['get_reconciled_data'] = (datetime.now() - stage_start).total_seconds()
+                return df
+
+        except Exception as e:
+            self.errors.append(f"Get pending promotion data error: {str(e)}")
+            self.logger.error("Failed to get pending promotion data", error=e)
+            raise
+
+    def _get_fact_sync_data(
+        self,
+        promoted_after: Optional[datetime] = None,
+        price_dates: Optional[List[date]] = None,
+    ) -> pd.DataFrame:
+        """
+        Pull staging rows that should be upserted into fact_daily_prices.
+
+        This combines two cases:
+        1. recently reconciled rows from the current run, even if the fact row
+           already exists and only needs to be refreshed
+        2. older reconciled rows that are still missing from fact_daily_prices
+
+        Returning both sets keeps the daily DAG incremental while also rescuing
+        stranded historical backfills.
+        """
+        recent_df = self._get_recently_reconciled_data(promoted_after=promoted_after)
+        pending_df = self._get_pending_fact_promotion_data(
+            promoted_after=None,
+            price_dates=price_dates,
+        )
+
+        frames = [df for df in (pending_df, recent_df) if not df.empty]
+        if not frames:
+            self.logger.warning("No reconciled staging rows available for fact sync")
+            return pd.DataFrame()
+
+        combined = pd.concat(frames, ignore_index=True)
+        combined = combined.drop_duplicates(
+            subset=['stock_code', 'price_date'],
+            keep='last',
+        )
+        combined = combined.sort_values(['price_date', 'stock_code']).reset_index(drop=True)
+
+        self.logger.info(
+            f"Prepared {len(combined)} reconciled rows for fact sync",
+            extra={"records": len(combined)}
+        )
+        return combined
     
     def _get_reconciled_data(self, execution_date: date) -> pd.DataFrame:
         """
@@ -877,10 +1048,10 @@ class PipelineOrchestrator:
                         'stock_code': record.stock_code,
                         'source': record.source,
                         'price_date': record.price_date,
-                        'close_price': float(record.close_price) if record.close_price else None,
-                        'change_1d_pct': float(record.change_1d_pct) if record.change_1d_pct else None,
-                        'change_ytd_pct': float(record.change_ytd_pct) if record.change_ytd_pct else None,
-                        'volume': int(record.volume) if record.volume else None
+                        'close_price': float(record.close_price) if record.close_price is not None else None,
+                        'change_1d_pct': float(record.change_1d_pct) if record.change_1d_pct is not None else None,
+                        'change_ytd_pct': float(record.change_ytd_pct) if record.change_ytd_pct is not None else None,
+                        'volume': int(record.volume) if record.volume is not None else None
                     })
                 
                 df = pd.DataFrame(data)
@@ -995,38 +1166,90 @@ class PipelineOrchestrator:
             DataFrame with calculated values filled in
         """
         df = data.copy()
-        
-        # Ensure price_date is datetime
+
+        if df.empty:
+            return df
+
+        # Ensure price_date is datetime for grouped calculations.
         if not pd.api.types.is_datetime64_any_dtype(df['price_date']):
             df['price_date'] = pd.to_datetime(df['price_date'])
-        
-        for stock_code in df['stock_code'].unique():
-            stock_mask = df['stock_code'] == stock_code
-            stock_data = df[stock_mask].sort_values('price_date')
-            
-            # Calculate change_1d_pct from previous day's close
-            prev_close = None
-            for idx, row in stock_data.iterrows():
-                if pd.isna(row['change_1d_pct']) or (isinstance(row['change_1d_pct'], (int, float)) and row['change_1d_pct'] == 0):
-                    if prev_close and prev_close > 0:
-                        calculated_change = ((row['close_price'] - prev_close) / prev_close) * 100
-                        df.loc[idx, 'change_1d_pct'] = round(calculated_change, 4)
-                    else:
-                        df.loc[idx, 'change_1d_pct'] = 0.0
-                prev_close = row['close_price']
-            
-            # Calculate change_ytd_pct from first day of year
-            year_start_prices = stock_data[stock_data['price_date'].dt.month == 1]
-            year_start_close = year_start_prices['close_price'].iloc[0] if len(year_start_prices) > 0 else stock_data['close_price'].iloc[0]
-            
-            for idx, row in stock_data.iterrows():
-                if pd.isna(row['change_ytd_pct']) or (isinstance(row['change_ytd_pct'], (int, float)) and row['change_ytd_pct'] == 0):
-                    if year_start_close and year_start_close > 0:
-                        calculated_ytd = ((row['close_price'] - year_start_close) / year_start_close) * 100
-                        df.loc[idx, 'change_ytd_pct'] = round(calculated_ytd, 4)
-                    else:
-                        df.loc[idx, 'change_ytd_pct'] = 0.0
-        
+
+        df = df.sort_values(['stock_code', 'price_date']).copy()
+
+        # Recalculate changes for sources that do not provide trustworthy
+        # percentage fields. Afrimarket current quotes expose absolute change,
+        # not percentage change, so we should always derive the percentages.
+        untrusted_pct_sources = df['source'].fillna('').str.lower().isin({'afrimarket'})
+
+        # First calculate whatever can be derived from the incoming batch itself.
+        batch_prev_close = df.groupby('stock_code')['close_price'].shift(1)
+        batch_change_1d = ((df['close_price'] - batch_prev_close) / batch_prev_close) * 100
+        recalc_1d_mask = df['change_1d_pct'].isna() | untrusted_pct_sources
+        df.loc[recalc_1d_mask, 'change_1d_pct'] = batch_change_1d[recalc_1d_mask].round(4)
+
+        df['calc_year'] = df['price_date'].dt.year
+        batch_year_start = df.groupby(['stock_code', 'calc_year'])['close_price'].transform('first')
+        batch_change_ytd = ((df['close_price'] - batch_year_start) / batch_year_start) * 100
+        recalc_ytd_mask = df['change_ytd_pct'].isna() | untrusted_pct_sources
+        df.loc[recalc_ytd_mask, 'change_ytd_pct'] = batch_change_ytd[recalc_ytd_mask].round(4)
+
+        # When the batch only contains the first observed row for a stock-year,
+        # a current-only rerun will incorrectly treat "today" as the YTD
+        # baseline. Force those rows back through DB-history lookup.
+        batch_year_position = df.groupby(['stock_code', 'calc_year']).cumcount()
+        needs_ytd_history = recalc_ytd_mask & untrusted_pct_sources & (batch_year_position == 0)
+        df.loc[needs_ytd_history, 'change_ytd_pct'] = pd.NA
+
+        # Then fill any remaining gaps from already-stored production history.
+        rows_needing_history = df[
+            (recalc_1d_mask & df['change_1d_pct'].isna()) |
+            (recalc_ytd_mask & df['change_ytd_pct'].isna())
+        ]
+        if not rows_needing_history.empty:
+            with self.db.get_session() as session:
+                stock_repo = StockRepository(session)
+                price_repo = PriceRepository(session)
+                stock_cache: Dict[str, Optional[int]] = {}
+
+                for idx, row in rows_needing_history.iterrows():
+                    stock_code = row['stock_code']
+                    stock_id = stock_cache.get(stock_code)
+                    if stock_code not in stock_cache:
+                        stock = stock_repo.get_by_code(stock_code)
+                        stock_id = stock.stock_id if stock else None
+                        stock_cache[stock_code] = stock_id
+
+                    if stock_id is None:
+                        continue
+
+                    price_date = row['price_date'].date()
+
+                    if recalc_1d_mask.loc[idx] and pd.isna(df.loc[idx, 'change_1d_pct']):
+                        previous_price = price_repo.get_previous_price(stock_id, price_date)
+                        if previous_price and previous_price.close_price:
+                            prev_close = float(previous_price.close_price)
+                            if prev_close > 0:
+                                change_1d = ((float(row['close_price']) - prev_close) / prev_close) * 100
+                                df.loc[idx, 'change_1d_pct'] = round(change_1d, 4)
+
+                    if recalc_ytd_mask.loc[idx] and pd.isna(df.loc[idx, 'change_ytd_pct']):
+                        year_start_price = price_repo.get_first_price_of_year(
+                            stock_id,
+                            row['calc_year'],
+                            through_date=price_date,
+                        )
+                        if year_start_price and year_start_price.close_price:
+                            baseline = float(year_start_price.close_price)
+                            if baseline > 0:
+                                change_ytd = ((float(row['close_price']) - baseline) / baseline) * 100
+                                df.loc[idx, 'change_ytd_pct'] = round(change_ytd, 4)
+
+        # If we still do not have a valid baseline, default only the first known
+        # observation to 0.0 rather than preserving bad source values.
+        df['change_1d_pct'] = df['change_1d_pct'].fillna(0.0)
+        df['change_ytd_pct'] = df['change_ytd_pct'].fillna(0.0)
+        df = df.drop(columns=['calc_year'])
+
         return df
     
     def _load_stocks(self, data: pd.DataFrame) -> int:
@@ -1102,7 +1325,7 @@ class PipelineOrchestrator:
                 f"Loaded {loaded_count} stocks",
                 extra={"loaded": loaded_count}
             )
-            
+
             self.stage_times['load_stocks'] = (datetime.now() - stage_start).total_seconds()
             
             return loaded_count
@@ -1125,8 +1348,16 @@ class PipelineOrchestrator:
             data = self._calculate_missing_changes(data)
             
             with self.db.get_session() as session:
-                stock_repo = StockRepository(session)
                 price_repo = PriceRepository(session)
+                stock_rows = (
+                    session.query(DimStock.stock_code, DimStock.stock_id)
+                    .filter(DimStock.stock_code.in_(data['stock_code'].dropna().unique().tolist()))
+                    .all()
+                )
+                stock_map = {
+                    str(stock_code).upper(): stock_id
+                    for stock_code, stock_id in stock_rows
+                }
                 
                 # Process in batches using bulk insert
                 for i in range(0, len(data), self.config.batch_size):
@@ -1136,38 +1367,39 @@ class PipelineOrchestrator:
                     price_records = []
                     for _, row in batch.iterrows():
                         try:
-                            # Get stock
-                            stock = stock_repo.get_by_code(row['stock_code'])
-                            if not stock:
+                            stock_id = stock_map.get(str(row['stock_code']).upper())
+                            if not stock_id:
                                 self.warnings.append(f"Stock not found: {row['stock_code']}")
                                 continue
                             
-                            # Calculate data quality based on available fields
-                            has_complete = all([
+                            # Determine quality flag
+                            quality_flag = self._derive_quality_flag(row)
+                            complete_data = all([
                                 pd.notna(row.get('close_price')),
                                 pd.notna(row.get('change_1d_pct')),
-                                pd.notna(row.get('change_ytd_pct'))
+                                pd.notna(row.get('change_ytd_pct')),
                             ])
-                            
-                            # Determine quality flag
-                            if has_complete:
-                                quality_flag = 'GOOD'
-                                complete_data = True
-                            elif pd.notna(row['close_price']):
-                                quality_flag = 'INCOMPLETE'
-                                complete_data = False
-                            else:
-                                quality_flag = 'POOR'
-                                complete_data = False
+                            quality = self._build_quality_metrics(
+                                price_date=row.get("price_date"),
+                                quality_flag=quality_flag,
+                                volume=row.get("volume"),
+                                change_1d_pct=row.get("change_1d_pct"),
+                                change_ytd_pct=row.get("change_ytd_pct"),
+                            )
                             
                             # Prepare price record for bulk insert
                             price_records.append({
-                                'stock_id': stock.stock_id,
+                                'stock_id': stock_id,
                                 'price_date': row['price_date'],
                                 'close_price': row['close_price'],
+                                'volume': row.get('volume'),
                                 'change_1d_pct': row.get('change_1d_pct'),
                                 'change_ytd_pct': row.get('change_ytd_pct'),
                                 'source': row.get('source', 'unknown'),
+                                'source_count': 1,
+                                'bar_status': 'RECONCILED' if self.config.use_staging else 'OBSERVED',
+                                'is_official': False,
+                                'confidence_score': quality["confidence_score"],
                                 'data_quality_flag': quality_flag,
                                 'has_complete_data': complete_data
                             })
@@ -1207,6 +1439,74 @@ class PipelineOrchestrator:
             self.errors.append(f"Price loading error: {str(e)}")
             self.logger.error("Price loading failed", error=e)
             raise  # Re-raise to fail the DAG task
+
+    def _derive_quality_flag(self, row: pd.Series) -> str:
+        """Derive a consistent quality flag from the available row fields."""
+        if pd.isna(row.get("close_price")):
+            return "POOR"
+
+        has_complete = all([
+            pd.notna(row.get("close_price")),
+            pd.notna(row.get("change_1d_pct")),
+            pd.notna(row.get("change_ytd_pct")),
+        ])
+        if has_complete:
+            return "GOOD"
+        return "INCOMPLETE"
+
+    def _build_quality_metrics(
+        self,
+        price_date: Any,
+        quality_flag: str,
+        volume: Any,
+        change_1d_pct: Any,
+        change_ytd_pct: Any,
+    ) -> Dict[str, Any]:
+        """Build consistent quality/confidence metadata for the existing price schema."""
+        fields_present = {
+            "close_price": True,
+            "change_1d_pct": pd.notna(change_1d_pct),
+            "change_ytd_pct": pd.notna(change_ytd_pct),
+            "volume": pd.notna(volume),
+        }
+        completeness_score = round(
+            (sum(1 for present in fields_present.values() if present) / len(fields_present)) * 100,
+            2,
+        )
+
+        age_days = 0
+        if price_date is not None:
+            try:
+                normalized_date = pd.to_datetime(price_date).date()
+                age_days = max((date.today() - normalized_date).days, 0)
+            except Exception:
+                age_days = 0
+
+        freshness_score = max(0.0, round(100 - min(age_days, 30) * 3, 2))
+
+        confidence_map = {
+            "GOOD": 85.0,
+            "INCOMPLETE": 70.0,
+            "SUSPICIOUS": 45.0,
+            "MISSING": 30.0,
+            "STALE": 30.0,
+            "POOR": 20.0,
+        }
+        confidence_score = confidence_map.get(quality_flag, 50.0)
+        anomaly_score = 60.0 if quality_flag == "SUSPICIOUS" else 0.0
+
+        return {
+            "completeness_score": completeness_score,
+            "freshness_score": freshness_score,
+            "confidence_score": confidence_score,
+            "anomaly_score": anomaly_score,
+            "quality_label": quality_flag,
+            "field_coverage": fields_present,
+            "notes": (
+                f"Generated from {quality_flag.lower()} market data "
+                f"during fact_daily_prices in-place redesign"
+            ),
+        }
     
     def _calculate_indicators(
         self,
@@ -1241,13 +1541,21 @@ class PipelineOrchestrator:
                 # Process each stock
                 for stock in stocks:
                     try:
-                        # Get price history (last 100 days for calculations)
-                        start_date = execution_date - timedelta(days=100)
-                        prices = price_repo.get_price_history(
+                        # Get trusted price history with enough depth for mature indicators
+                        required_history = self.indicator_calculator.minimum_history_required()
+                        start_date = execution_date - timedelta(days=240)
+                        prices = price_repo.get_trusted_price_history(
                             stock.stock_id,
                             start_date=start_date,
                             end_date=execution_date
                         )
+
+                        if len(prices) < required_history:
+                            self.logger.debug(
+                                f"Skipping indicators for {stock.stock_code}: "
+                                f"{len(prices)} trusted prices available, need {required_history}"
+                            )
+                            continue
                         
                         if len(prices) < 2:
                             continue
@@ -1264,10 +1572,31 @@ class PipelineOrchestrator:
                             stock_code=stock.stock_code,
                             price_history=price_data
                         )
-                        
+
+                        existing_dates = indicator_repo.get_existing_dates(
+                            stock.stock_id,
+                            start_date=start_date,
+                            end_date=execution_date,
+                        )
+
                         # Save to database
                         for indicator in indicators:
-                            indicator_repo.create_indicator(**indicator)
+                            calculation_date = indicator['calculation_date']
+                            if (
+                                calculation_date in existing_dates and
+                                calculation_date != execution_date
+                            ):
+                                continue
+
+                            values = {
+                                k: v for k, v in indicator.items()
+                                if k not in ('stock_id', 'calculation_date')
+                            }
+                            indicator_repo.save_indicators(
+                                stock_id=stock.stock_id,
+                                calculation_date=calculation_date,
+                                indicators=values
+                            )
                             calculated_count += 1
                         
                         session.commit()

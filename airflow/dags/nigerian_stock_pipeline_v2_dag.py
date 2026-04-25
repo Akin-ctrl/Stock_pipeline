@@ -31,8 +31,10 @@ from airflow.decorators import dag, task
 from airflow.operators.python import PythonOperator
 from airflow.operators.email import EmailOperator
 from airflow.models.baseoperator import chain
+from sqlalchemy import text
 
 # PYTHONPATH=/Stock_pipeline is set in docker-compose.yml
+from app.config.database import get_db
 from app.pipelines.orchestrator import PipelineOrchestrator, PipelineConfig
 from app.utils.logger import get_logger
 
@@ -40,14 +42,14 @@ logger = get_logger(__name__)
 
 # Default arguments for all tasks
 DEFAULT_ARGS = {
-    "owner": "nigerian_equity_investor",
+    "owner": "Emmanuel Akingbade",
     "depends_on_past": False,
-    "email": ["alerts@stockpipeline.com"], # Replace with actual alert email
-    "email_on_failure": True,
+    "email": ["ramonaltton@gmail.com"], # Replace with actual alert email
+    "email_on_failure": False,
     "email_on_retry": False,
     "retries": 3,
     "retry_delay": timedelta(minutes=5),
-    "execution_timeout": timedelta(minutes=30),
+    "execution_timeout": timedelta(minutes=90),
 }
 
 
@@ -76,6 +78,45 @@ def _build_config() -> PipelineConfig:
     )
 
 
+def _get_latest_fact_price_date() -> date | None:
+    """Return the latest promoted market date, if any."""
+    db = get_db()
+    with db.get_session() as session:
+        latest_date = session.execute(
+            text("SELECT MAX(price_date) FROM fact_daily_prices")
+        ).scalar()
+    return latest_date
+
+
+def _get_staging_backlog_metrics() -> dict:
+    """Return simple backlog counts so the DAG can distinguish outage vs backlog processing."""
+    db = get_db()
+    with db.get_session() as session:
+        unreconciled_count = session.execute(
+            text("SELECT COUNT(*) FROM staging_daily_prices WHERE reconciled = false")
+        ).scalar() or 0
+
+        pending_fact_count = session.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM staging_daily_prices s
+                JOIN dim_stocks ds ON ds.stock_code = s.stock_code
+                LEFT JOIN fact_daily_prices f
+                    ON f.stock_id = ds.stock_id
+                   AND f.price_date = s.price_date
+                WHERE s.reconciled = true
+                  AND f.price_id IS NULL
+                """
+            )
+        ).scalar() or 0
+
+    return {
+        "unreconciled_count": int(unreconciled_count),
+        "pending_fact_count": int(pending_fact_count),
+    }
+
+
 def fetch_and_stage_v2(**context) -> dict:
     execution_date = _get_execution_date(context)
     run_id = context.get("run_id")
@@ -85,6 +126,22 @@ def fetch_and_stage_v2(**context) -> dict:
     orchestrator = PipelineOrchestrator(config=config)
 
     raw_data = orchestrator._fetch_data(execution_date, None)
+    if raw_data.empty and orchestrator.errors:
+        backlog_metrics = _get_staging_backlog_metrics()
+        if (
+            backlog_metrics["unreconciled_count"] == 0
+            and backlog_metrics["pending_fact_count"] == 0
+        ):
+            raise Exception(
+                "No data fetched from any source and no staging backlog is available. "
+                f"Fetch errors: {orchestrator.errors}"
+            )
+
+        logger.warning(
+            "Source fetch failed, but staging backlog exists; continuing so pending "
+            "reconciliation/promotion work can still be processed"
+        )
+
     stocks_processed = 0
     if config.load_stocks and not raw_data.empty:
         stocks_processed = orchestrator._load_stocks(raw_data)
@@ -123,11 +180,13 @@ def reconcile_staging_v2(**context) -> dict:
 
     orchestrator = PipelineOrchestrator(config=_build_config())
     unreconciled_dates = orchestrator._get_unreconciled_dates()
+    start_ts = datetime.now().timestamp()
 
     if unreconciled_dates:
         orchestrator._reconcile_all_staging(unreconciled_dates)
 
     return {
+        "start_ts": start_ts,
         "reconciled_count": orchestrator.reconciled_count,
         "reconciled_dates": [d.isoformat() for d in unreconciled_dates]
     }
@@ -138,11 +197,37 @@ def transform_and_load_v2(**context) -> dict:
     logger.info(f"Stage 4-6: Pull reconciled, transform, load prices for {execution_date}")
 
     orchestrator = PipelineOrchestrator(config=_build_config())
-    reconciled_data = orchestrator._get_all_reconciled_data()
+    ti = context["ti"]
+    fetch_metrics = ti.xcom_pull(task_ids="fetch_and_stage_v2") or {}
+    reconcile_metrics = ti.xcom_pull(task_ids="reconcile_staging_v2") or {}
+    promoted_after = reconcile_metrics.get("start_ts")
+    promoted_after_dt = datetime.fromtimestamp(promoted_after) if promoted_after else None
+    staged_records = int(fetch_metrics.get("staging_loaded", 0) or 0)
+    reconciled_count = int(reconcile_metrics.get("reconciled_count", 0) or 0)
+
+    reconciled_data = orchestrator._get_fact_sync_data(
+        promoted_after=promoted_after_dt,
+    )
     
-    # Fail if no reconciled data available
     if reconciled_data.empty:
-        raise Exception("No reconciled data available from staging. Check reconciliation task.")
+        latest_price_date = _get_latest_fact_price_date()
+        if staged_records == 0 and reconciled_count == 0:
+            logger.info(
+                "No staged or reconciled rows available for promotion; "
+                "treating transform/load as a clean no-op"
+            )
+            return {
+                "reconciled_records": 0,
+                "transformed_records": 0,
+                "prices_loaded": 0,
+                "latest_price_date": latest_price_date.isoformat() if latest_price_date else None,
+                "skipped_no_new_data": True,
+            }
+
+        raise Exception(
+            "No reconciled data available from staging after fetch/reconcile activity. "
+            "Check promotion handoff and staging state."
+        )
 
     transformed_data = reconciled_data
     if not reconciled_data.empty:
@@ -160,47 +245,112 @@ def transform_and_load_v2(**context) -> dict:
     return {
         "reconciled_records": len(reconciled_data),
         "transformed_records": len(transformed_data),
-        "prices_loaded": prices_loaded
+        "prices_loaded": prices_loaded,
+        "latest_price_date": (
+            max(reconciled_data["price_date"]).isoformat()
+            if not reconciled_data.empty else None
+        ),
+        "skipped_no_new_data": False,
+    }
+
+
+def _get_execution_day_market_metrics(execution_date: date) -> dict:
+    """Get same-day production metrics used for the summary email."""
+    db = get_db()
+    with db.get_session() as session:
+        total_prices = session.execute(
+            text(
+                "SELECT COUNT(*) FROM fact_daily_prices WHERE price_date = :execution_date"
+            ),
+            {"execution_date": execution_date},
+        ).scalar() or 0
+
+        complete_prices = session.execute(
+            text(
+                "SELECT COUNT(*) "
+                "FROM fact_daily_prices "
+                "WHERE price_date = :execution_date AND has_complete_data = true"
+            ),
+            {"execution_date": execution_date},
+        ).scalar() or 0
+
+        indicator_stocks = session.execute(
+            text(
+                "SELECT COUNT(DISTINCT stock_id) "
+                "FROM fact_technical_indicators "
+                "WHERE calculation_date = :execution_date"
+            ),
+            {"execution_date": execution_date},
+        ).scalar() or 0
+
+    return {
+        "total_prices": int(total_prices),
+        "complete_prices": int(complete_prices),
+        "indicator_stocks": int(indicator_stocks),
     }
 
 
 def calculate_indicators_v2(**context) -> dict:
     execution_date = _get_execution_date(context)
-    logger.info(f"Stage 7: Calculate indicators for {execution_date}")
+    ti = context["ti"]
+    load_metrics = ti.xcom_pull(task_ids="transform_and_load_v2") or {}
+    market_date = date.fromisoformat(load_metrics["latest_price_date"]) if load_metrics.get("latest_price_date") else execution_date
+    logger.info(f"Stage 7: Calculate indicators for {market_date}")
 
     config = _build_config()
     orchestrator = PipelineOrchestrator(config=config)
     calculated = 0
-    if config.calculate_indicators:
-        calculated = orchestrator._calculate_indicators(execution_date, None)
+    if load_metrics.get("skipped_no_new_data"):
+        logger.info("Skipping indicator calculation because no new market data was promoted")
+    elif config.calculate_indicators:
+        calculated = orchestrator._calculate_indicators(market_date, None)
 
-    return {"indicators_calculated": calculated}
+    return {
+        "indicators_calculated": calculated,
+        "market_date": market_date.isoformat(),
+    }
 
 
 def evaluate_alerts_v2(**context) -> dict:
     execution_date = _get_execution_date(context)
-    logger.info(f"Stage 8: Evaluate alerts for {execution_date}")
+    ti = context["ti"]
+    load_metrics = ti.xcom_pull(task_ids="transform_and_load_v2") or {}
+    market_date = date.fromisoformat(load_metrics["latest_price_date"]) if load_metrics.get("latest_price_date") else execution_date
+    logger.info(f"Stage 8: Evaluate alerts for {market_date}")
 
     config = _build_config()
     orchestrator = PipelineOrchestrator(config=config)
     alerts = 0
-    if config.evaluate_alerts:
-        alerts = orchestrator._evaluate_alerts(execution_date)
+    if load_metrics.get("skipped_no_new_data"):
+        logger.info("Skipping alert evaluation because no new market data was promoted")
+    elif config.evaluate_alerts:
+        alerts = orchestrator._evaluate_alerts(market_date)
 
-    return {"alerts_generated": alerts}
+    return {
+        "alerts_generated": alerts,
+        "market_date": market_date.isoformat(),
+    }
 
 
 def generate_recommendations_v2(**context) -> dict:
     execution_date = _get_execution_date(context)
-    logger.info(f"Stage 9: Generate recommendations for {execution_date}")
+    ti = context["ti"]
+    load_metrics = ti.xcom_pull(task_ids="transform_and_load_v2") or {}
+    market_date = date.fromisoformat(load_metrics["latest_price_date"]) if load_metrics.get("latest_price_date") else execution_date
+    logger.info(f"Stage 9: Generate recommendations for {market_date}")
 
     config = _build_config()
     orchestrator = PipelineOrchestrator(config=config)
     recs = 0
-    if config.generate_recommendations:
-        recs = orchestrator._generate_recommendations(execution_date, None)
+    if load_metrics.get("skipped_no_new_data"):
+        logger.info("Skipping recommendation generation because no new market data was promoted")
+    elif config.generate_recommendations:
+        recs = orchestrator._generate_recommendations(market_date, None)
 
-    return {"recommendations_generated": recs}
+    return {
+        "recommendations_generated": recs,
+        "market_date": market_date.isoformat(),
+    }
 
 
 def check_pipeline_sla_v2(**context) -> dict:
@@ -265,12 +415,37 @@ def generate_daily_summary_v2(**context) -> str:
     prices_loaded = load_metrics.get("prices_loaded", 0)
     stocks_processed = fetch_metrics.get("stocks_processed", 0)
     indicators_calculated = indicator_metrics.get("indicators_calculated", 0)
+    staged_records = fetch_metrics.get("staging_loaded", 0)
+    reconciled_records = load_metrics.get("reconciled_records", 0)
+    market_date_str = (
+        load_metrics.get("latest_price_date")
+        or indicator_metrics.get("market_date")
+        or alert_metrics.get("market_date")
+        or rec_metrics.get("market_date")
+        or execution_date
+    )
+    market_date_obj = date.fromisoformat(market_date_str)
+    market_metrics = _get_execution_day_market_metrics(market_date_obj)
+
+    completeness_pct = (
+        (market_metrics["complete_prices"] / market_metrics["total_prices"]) * 100
+        if market_metrics["total_prices"] > 0 else 0.0
+    )
+    indicator_coverage_pct = (
+        (market_metrics["indicator_stocks"] / market_metrics["total_prices"]) * 100
+        if market_metrics["total_prices"] > 0 else 0.0
+    )
+    reconciliation_rate_pct = (
+        (reconciled_records / staged_records) * 100
+        if staged_records > 0 else 0.0
+    )
     
     summary = f"""
     Nigerian Stock Pipeline V2 Daily Summary (Afrimarket + Staging)
     ═══════════════════════════════════════════════════════
     
     Execution Date: {execution_date}
+    Market Date: {market_date_str}
     Status:  SUCCESS
     
      Processing Metrics:
@@ -282,8 +457,8 @@ def generate_daily_summary_v2(**context) -> str:
     
      Staging & Reconciliation:
     ────────────────────────────
-    • Records Staged: {fetch_metrics.get('staging_loaded', 0)}
-    • Records Reconciled: {reconcile_metrics.get('reconciled_count', 0)}
+    • Records Staged: {staged_records}
+    • Records Reconciled: {reconciled_records}
     
      Recommendations:
     ────────────────────────────────────
@@ -291,9 +466,9 @@ def generate_daily_summary_v2(**context) -> str:
     
      Data Quality:
     ────────────────
-    • Data Completeness: {(prices_loaded / max(stocks_processed, 1) * 100):.1f}%
-    • Indicator Coverage: {(indicators_calculated / max(prices_loaded, 1) * 100):.1f}%
-    • Reconciliation Rate: {(reconcile_metrics.get('reconciled_count', 0) / max(fetch_metrics.get('staging_loaded', 1), 1) * 100):.1f}%
+    • Data Completeness: {completeness_pct:.1f}%
+    • Indicator Coverage: {indicator_coverage_pct:.1f}%
+    • Reconciliation Rate: {reconciliation_rate_pct:.1f}%
     
     ───────────────────────────────────────
     Next run: Tomorrow at 3:00 PM WAT

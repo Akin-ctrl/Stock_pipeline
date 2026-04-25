@@ -171,6 +171,25 @@ class IndicatorRepository(BaseRepository[FactTechnicalIndicator]):
         df = df.sort_values('date')  # Ascending for time series
         df = df.set_index('date')
         return df
+
+    def get_existing_dates(
+        self,
+        stock_id: int,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> set[date]:
+        """Return the set of calculation dates already stored for a stock."""
+        query = (
+            self.session.query(FactTechnicalIndicator.calculation_date)
+            .filter(FactTechnicalIndicator.stock_id == stock_id)
+        )
+
+        if start_date:
+            query = query.filter(FactTechnicalIndicator.calculation_date >= start_date)
+        if end_date:
+            query = query.filter(FactTechnicalIndicator.calculation_date <= end_date)
+
+        return {row[0] for row in query.all()}
     
     def save_indicators(
         self,

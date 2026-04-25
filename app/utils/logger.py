@@ -9,6 +9,7 @@ Follows reference.py principles:
 
 import logging
 import sys
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Dict
@@ -49,11 +50,11 @@ class StructuredLogger:
             correlation_id: Optional ID for tracing related log entries
         """
         self._logger = logging.getLogger(name)
-        self._logger.setLevel(level)
         self._correlation_id = correlation_id
         
         # Avoid duplicate handlers
         if not self._logger.handlers:
+            self._logger.setLevel(level)
             # Console handler
             console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setLevel(level)
@@ -72,6 +73,9 @@ class StructuredLogger:
                     # Skip file logging if directory cannot be created
                     # Console logging will still work
                     pass
+        elif self._logger.level == logging.NOTSET:
+            # If inherited level is unset, apply requested level once.
+            self._logger.setLevel(level)
     
     def _get_formatter(self) -> logging.Formatter:
         """Create JSON formatter for structured logs."""
@@ -185,6 +189,12 @@ def get_logger(
     log_dir = Path(__file__).parent.parent.parent / "logs"
     log_file = log_dir / f"{name}.log"
     
+    env_level = os.getenv("LOG_LEVEL", "").strip().upper()
+    if env_level:
+        resolved = getattr(logging, env_level, None)
+        if isinstance(resolved, int):
+            level = resolved
+
     return StructuredLogger(
         name=name,
         level=level,

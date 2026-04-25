@@ -154,6 +154,13 @@ class AlertHistory(Base):
             "severity IN ('INFO', 'WARNING', 'CRITICAL')",
             name='chk_alert_severity'
         ),
+        Index(
+            'ux_alert_history_stock_rule_date',
+            'stock_id',
+            'rule_id',
+            'alert_date',
+            unique=True
+        ),
         Index('idx_stock_alerts', 'stock_id', 'alert_date'),
         Index('idx_unresolved', 'is_resolved', 'severity'),
     )

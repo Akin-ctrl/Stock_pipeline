@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, desc, func
+from sqlalchemy import text
 
 from app.models import FactRecommendation, DimStock
 from app.repositories.base import BaseRepository
@@ -54,6 +55,11 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
                 / recommendation.current_price
             ) * 100
         
+        self._delete_existing_rows(
+            recommendation_date=recommendation.recommendation_date,
+            stock_ids=[recommendation.stock_id],
+        )
+
         fact_rec = FactRecommendation(
             stock_id=recommendation.stock_id,
             recommendation_date=recommendation.recommendation_date,
@@ -79,11 +85,30 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
             is_active=True
         )
         
-        self.db.add(fact_rec)
-        self.db.commit()
-        self.db.refresh(fact_rec)
+        self.session.add(fact_rec)
+        self.session.flush()
+        self.session.refresh(fact_rec)
         
         return fact_rec
+
+    def _delete_existing_rows(
+        self,
+        recommendation_date: date,
+        stock_ids: List[int],
+    ) -> int:
+        """Remove existing rows for the same stock/date pair before reinserting."""
+        if not stock_ids:
+            return 0
+
+        deleted = (
+            self.session.query(FactRecommendation)
+            .filter(
+                FactRecommendation.recommendation_date == recommendation_date,
+                FactRecommendation.stock_id.in_(stock_ids),
+            )
+            .delete(synchronize_session=False)
+        )
+        return deleted
     
     def create_recommendations_bulk(
         self,
@@ -98,11 +123,63 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         Returns:
             Number of records created
         """
+        if not recommendations:
+            return 0
+
+        deduped: dict[tuple[int, date], "StockRecommendation"] = {}
+        for rec in recommendations:
+            deduped[(rec.stock_id, rec.recommendation_date)] = rec
+
+        recommendations = list(deduped.values())
+
+        recs_by_date: dict[date, List["StockRecommendation"]] = {}
+        for rec in recommendations:
+            recs_by_date.setdefault(rec.recommendation_date, []).append(rec)
+
+        for recommendation_date, recs in recs_by_date.items():
+            self._delete_existing_rows(
+                recommendation_date=recommendation_date,
+                stock_ids=[rec.stock_id for rec in recs],
+            )
+
         count = 0
         for rec in recommendations:
-            self.create_recommendation(rec)
+            reason_text = " | ".join(rec.reasons[:3])
+
+            potential_return = None
+            if rec.target_price and rec.current_price:
+                potential_return = (
+                    (rec.target_price - rec.current_price) / rec.current_price
+                ) * 100
+
+            fact_rec = FactRecommendation(
+                stock_id=rec.stock_id,
+                recommendation_date=rec.recommendation_date,
+                signal_type=rec.signal_type.value,
+                confidence_score=Decimal(str(rec.confidence * 100)),
+                overall_score=Decimal(str(rec.score)),
+                score_category=rec.score_category.value,
+                current_price=rec.current_price,
+                target_price=rec.target_price,
+                stop_loss=rec.stop_loss,
+                potential_return_pct=Decimal(str(potential_return)) if potential_return is not None else None,
+                risk_level=rec.risk_level,
+                recommendation_reason=reason_text,
+                technical_score=Decimal(str(rec.stock_score.technical_score)),
+                momentum_score=Decimal(str(rec.stock_score.momentum_score)),
+                volatility_score=Decimal(str(rec.stock_score.volatility_score)),
+                trend_score=Decimal(str(rec.stock_score.trend_score)),
+                volume_score=Decimal(str(rec.stock_score.volume_score)),
+                rsi_value=Decimal(str(rec.indicators.get('rsi_14')))
+                if 'rsi_14' in rec.indicators else None,
+                macd_value=Decimal(str(rec.indicators.get('macd')))
+                if 'macd' in rec.indicators else None,
+                is_active=True,
+            )
+            self.session.add(fact_rec)
             count += 1
-        
+
+        self.session.flush()
         return count
     
     def get_recommendations_by_date(
@@ -120,7 +197,7 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         Returns:
             List of FactRecommendation instances
         """
-        query = self.db.query(FactRecommendation).filter(
+        query = self.session.query(FactRecommendation).filter(
             FactRecommendation.recommendation_date == recommendation_date
         )
         
@@ -146,7 +223,7 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         Returns:
             List of FactRecommendation instances
         """
-        query = self.db.query(FactRecommendation).filter(
+        query = self.session.query(FactRecommendation).filter(
             and_(
                 FactRecommendation.recommendation_date >= start_date,
                 FactRecommendation.recommendation_date <= end_date
@@ -178,7 +255,7 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         Returns:
             List of FactRecommendation instances
         """
-        return self.db.query(FactRecommendation).filter(
+        return self.session.query(FactRecommendation).filter(
             FactRecommendation.stock_id == stock_id
         ).order_by(
             desc(FactRecommendation.recommendation_date)
@@ -197,7 +274,7 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         Returns:
             List of active FactRecommendation instances
         """
-        query = self.db.query(FactRecommendation).filter(
+        query = self.session.query(FactRecommendation).filter(
             FactRecommendation.is_active == True
         )
         
@@ -227,7 +304,7 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         Returns:
             List of top FactRecommendation instances
         """
-        return self.db.query(FactRecommendation).filter(
+        return self.session.query(FactRecommendation).filter(
             and_(
                 FactRecommendation.recommendation_date == recommendation_date,
                 FactRecommendation.signal_type.in_(['BUY', 'STRONG_BUY'])
@@ -269,8 +346,8 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         rec.actual_return_pct = actual_return_pct
         rec.is_active = False
         
-        self.db.commit()
-        self.db.refresh(rec)
+        self.session.commit()
+        self.session.refresh(rec)
         
         return rec
     
@@ -291,7 +368,7 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         """
         expired_date = date.fromordinal(cutoff_date.toordinal() - max_days)
         
-        count = self.db.query(FactRecommendation).filter(
+        count = self.session.query(FactRecommendation).filter(
             and_(
                 FactRecommendation.is_active == True,
                 FactRecommendation.recommendation_date <= expired_date,
@@ -303,7 +380,7 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
             'is_active': False
         })
         
-        self.db.commit()
+        self.session.commit()
         return count
     
     def get_performance_stats(
@@ -321,7 +398,7 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         Returns:
             Dict of performance metrics
         """
-        query = self.db.query(FactRecommendation)
+        query = self.session.query(FactRecommendation)
         
         if start_date:
             query = query.filter(FactRecommendation.recommendation_date >= start_date)
@@ -360,9 +437,39 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
             'wins': wins,
             'losses': losses
         }
+
+    def deduplicate_existing_rows(self) -> int:
+        """
+        Remove duplicate recommendation rows, keeping the newest row per stock/date.
+
+        Returns:
+            Number of duplicate rows deleted
+        """
+        result = self.session.execute(
+            text(
+                """
+                DELETE FROM fact_recommendations fr
+                USING (
+                    SELECT recommendation_id
+                    FROM (
+                        SELECT
+                            recommendation_id,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY stock_id, recommendation_date
+                                ORDER BY recommendation_id DESC
+                            ) AS rn
+                        FROM fact_recommendations
+                    ) ranked
+                    WHERE ranked.rn > 1
+                ) dupes
+                WHERE fr.recommendation_id = dupes.recommendation_id
+                """
+            )
+        )
+        return result.rowcount or 0
     
     def get_by_id(self, recommendation_id: int) -> Optional[FactRecommendation]:
         """Get recommendation by ID."""
-        return self.db.query(FactRecommendation).filter(
+        return self.session.query(FactRecommendation).filter(
             FactRecommendation.recommendation_id == recommendation_id
         ).options(joinedload(FactRecommendation.stock)).first()

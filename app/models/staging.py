@@ -1,14 +1,15 @@
 """
-Staging table models for dual-source data reconciliation.
+Staging table models for source-ingestion and reconciliation workflows.
 
-    Stores raw data from multiple sources (afrimarket API).
-before reconciliation and promotion to production tables.
+The current live pipeline loads source observations into staging before
+reconciliation and promotion to production tables. The staging layer is the
+foundation for current single-source operation and future multi-source support.
 
 Features:
-- Source tracking
-- Reconciliation status
-- Audit trail
-- Data quality validation
+- source tracking
+- reconciliation status
+- audit trail
+- promotion lineage
 """
 
 from datetime import datetime, date
@@ -26,15 +27,15 @@ from app.models.base import Base, TimestampMixin
 
 class StagingDailyPrice(Base, TimestampMixin):
     """
-    Staging table for daily stock prices from multiple sources.
+    Staging table for daily stock prices prior to promotion.
     
-    Holds raw data before reconciliation and promotion to fact_daily_prices.
+    Holds source-ingested data before reconciliation and promotion to fact_daily_prices.
     Retains source information and reconciliation status for audit purposes.
     
     Attributes:
         staging_id: Primary key
         stock_code: Stock ticker symbol (e.g., 'DANGCEM', 'ZENITH')
-        source: Data source identifier ('afrimarket')
+        source: Data source identifier
         price_date: Trading date
         close_price: Closing price (required)
         change_1d_pct: Daily percentage change (nullable)
@@ -67,7 +68,7 @@ class StagingDailyPrice(Base, TimestampMixin):
     
     # Source Tracking
     source = Column(String(50), nullable=False, index=True,
-                   comment='Data source: afrimarket')
+                   comment='Data source identifier')
     
     # Price Data
     price_date = Column(Date, nullable=False, index=True, 
@@ -104,8 +105,6 @@ class StagingDailyPrice(Base, TimestampMixin):
         
         # Data validation
         CheckConstraint('close_price > 0', name='ck_staging_positive_price'),
-        CheckConstraint("source = 'afrimarket'", 
-                       name='ck_staging_valid_source'),
     )
     
     def __repr__(self) -> str:
@@ -123,9 +122,9 @@ class StagingDailyPrice(Base, TimestampMixin):
             'stock_code': self.stock_code,
             'source': self.source,
             'price_date': self.price_date.isoformat() if self.price_date else None,
-            'close_price': float(self.close_price) if self.close_price else None,
-            'change_1d_pct': float(self.change_1d_pct) if self.change_1d_pct else None,
-            'change_ytd_pct': float(self.change_ytd_pct) if self.change_ytd_pct else None,
+            'close_price': float(self.close_price) if self.close_price is not None else None,
+            'change_1d_pct': float(self.change_1d_pct) if self.change_1d_pct is not None else None,
+            'change_ytd_pct': float(self.change_ytd_pct) if self.change_ytd_pct is not None else None,
             'volume': self.volume,
             'loaded_at': self.loaded_at.isoformat() if self.loaded_at else None,
             'reconciled': self.reconciled,

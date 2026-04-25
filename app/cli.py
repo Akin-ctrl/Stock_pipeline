@@ -61,7 +61,7 @@ def pipeline():
 @click.option('--calculate-indicators/--no-calculate-indicators', default=True, help='Calculate indicators')
 @click.option('--evaluate-alerts/--no-evaluate-alerts', default=True, help='Evaluate alerts')
 @click.option('--generate-recommendations/--no-generate-recommendations', default=True, help='Generate recommendations')
-@click.option('--recommendation-profile', type=click.Choice(['balanced', 'short_term', 'long_term']), default='balanced', show_default=True, help='Recommendation profile for screening horizon')
+@click.option('--recommendation-profile', type=click.Choice(['steady_20p_10d']), default='steady_20p_10d', show_default=True, help='Recommendation profile for screening horizon')
 @click.option('--batch-size', default=50, type=int, help='Batch processing size')
 @click.option('--lookback-days', default=30, type=int, help='Days of historical data')
 def run(

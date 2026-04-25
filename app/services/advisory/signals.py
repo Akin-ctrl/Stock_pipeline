@@ -73,8 +73,8 @@ class SignalGenerator:
                 - rsi_14: 14-day RSI
                 - macd: MACD value
                 - macd_signal: MACD signal line
-                - sma_50: 50-day simple moving average
-                - sma_200: 200-day simple moving average
+                - ma_30: 30-day simple moving average
+                - ma_90: 90-day simple moving average
                 - current_price: Current stock price
                 - volume_ratio: Current volume / average volume
                 
@@ -113,23 +113,23 @@ class SignalGenerator:
         # Moving Average Signal
         ma_signal = self._analyze_moving_averages(
             indicators.get('current_price'),
-            indicators.get('sma_50'),
-            indicators.get('sma_200')
+            indicators.get('ma_30'),
+            indicators.get('ma_90')
         )
         if ma_signal:
             signals.append(ma_signal)
             price = indicators.get('current_price', 0)
-            sma50 = indicators.get('sma_50', 0)
-            sma200 = indicators.get('sma_200', 0)
+            ma30 = indicators.get('ma_30', 0)
+            ma90 = indicators.get('ma_90', 0)
             
             if ma_signal['signal'] == SignalType.STRONG_BUY:
-                reasons.append(f"Golden Cross - SMA50 ({sma50:.2f}) > SMA200 ({sma200:.2f})")
+                reasons.append(f"Bullish trend - MA30 ({ma30:.2f}) > MA90 ({ma90:.2f})")
             elif ma_signal['signal'] == SignalType.BUY:
-                reasons.append(f"Price ({price:.2f}) > SMA50 ({sma50:.2f})")
+                reasons.append(f"Price ({price:.2f}) > MA30 ({ma30:.2f})")
             elif ma_signal['signal'] == SignalType.STRONG_SELL:
-                reasons.append(f"Death Cross - SMA50 ({sma50:.2f}) < SMA200 ({sma200:.2f})")
+                reasons.append(f"Bearish trend - MA30 ({ma30:.2f}) < MA90 ({ma90:.2f})")
             elif ma_signal['signal'] == SignalType.SELL:
-                reasons.append(f"Price ({price:.2f}) < SMA50 ({sma50:.2f})")
+                reasons.append(f"Price ({price:.2f}) < MA30 ({ma30:.2f})")
         
         # Volume Signal
         volume_signal = self._analyze_volume(indicators.get('volume_ratio'))
@@ -200,8 +200,8 @@ class SignalGenerator:
     def _analyze_moving_averages(
         self,
         price: Optional[float],
-        sma_50: Optional[float],
-        sma_200: Optional[float]
+        ma_30: Optional[float],
+        ma_90: Optional[float]
     ) -> Optional[Dict]:
         """Analyze moving average crossovers."""
         if price is None:
@@ -210,15 +210,15 @@ class SignalGenerator:
         signals = []
         
         # Golden Cross / Death Cross
-        if sma_50 is not None and sma_200 is not None:
-            if sma_50 > sma_200:
+        if ma_30 is not None and ma_90 is not None:
+            if ma_30 > ma_90:
                 signals.append({'signal': SignalType.STRONG_BUY, 'weight': 1.3})
-            elif sma_50 < sma_200:
+            elif ma_30 < ma_90:
                 signals.append({'signal': SignalType.STRONG_SELL, 'weight': 1.3})
         
-        # Price vs SMA50
-        if sma_50 is not None:
-            price_diff_pct = ((price - sma_50) / sma_50) * 100
+        # Price vs MA30
+        if ma_30 is not None:
+            price_diff_pct = ((price - ma_30) / ma_30) * 100
             if price_diff_pct > 5:
                 signals.append({'signal': SignalType.BUY, 'weight': 0.7})
             elif price_diff_pct < -5:

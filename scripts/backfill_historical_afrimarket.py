@@ -8,7 +8,7 @@ and loads it into the staging area for reconciliation with existing NGX data.
 Usage:
     python scripts/backfill_historical_afrimarket.py --years 10
     python scripts/backfill_historical_afrimarket.py --stocks DANGCEM,ZENITHBANK --years 1
-    python scripts/backfill_historical_afrimarket.py --start-date 2020-01-01 --end-date 2023-12-31
+    python scripts/backfill_historical_afrimarket.py --start-date 2016-01-01 --end-date today
 """
 
 import sys

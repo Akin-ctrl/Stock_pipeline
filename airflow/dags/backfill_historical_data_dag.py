@@ -15,7 +15,7 @@ Triggered manually via:
     --conf '{"years": 5, "stocks": "DANGCEM,ZENITHBANK,GTCO"}'
   
   airflow dags trigger backfill_historical_data \
-    --conf '{"start_date": "2020-01-01", "end_date": "2023-12-31"}'
+    --conf '{"start_date": "2020-01-01", "end_date": "YESTERDAY"}'
   
   airflow dags trigger backfill_historical_data \
     --conf '{"test": true}'  # 1 year, 5 stocks
@@ -44,14 +44,14 @@ logger = get_logger(__name__)
 
 # Default arguments for all tasks
 DEFAULT_ARGS = {
-    "owner": "data_engineer",
+    "owner": "Emmanuel Akingbade",
     "depends_on_past": False,
-    "email": ["alerts@stockpipeline.com"],
-    "email_on_failure": True,
+    "email": ["ramonaltton@gmail.com"],
+    "email_on_failure": False,
     "email_on_retry": False,
-    "retries": 2,
+    "retries": 3,
     "retry_delay": timedelta(minutes=10),
-    "execution_timeout": timedelta(hours=4),  # Backfill can take longer
+    "execution_timeout": timedelta(hours=24),  # Backfill can take longer
 }
 
 
@@ -94,10 +94,10 @@ def backfill_historical_data_dag():
             
             logger.info(f"Trigger config received: {conf}")
             
-            # Default to 1 year if no configuration provided
+            # Default to 10 years if no configuration provided
             if not conf:
-                logger.info("No configuration provided, defaulting to 1 year backfill")
-                conf = {"years": 1}
+                logger.info("No configuration provided, defaulting to 10 year backfill")
+                conf = {"years": 10}
             
             # Validate that at least one date config is provided
             has_years = 'years' in conf

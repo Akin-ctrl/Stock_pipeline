@@ -99,19 +99,25 @@ class DataTransformer:
     
     def _check_completeness(self, df: pd.DataFrame) -> pd.Series:
         """
-        Check if each record has complete OHLCV data.
+        Check whether each record has the fields this pipeline actually relies on.
         
         Returns:
             Boolean series indicating completeness
         """
-        ohlcv_cols = ['open_price', 'high_price', 'low_price', 'close_price', 'volume']
-        existing_cols = [col for col in ohlcv_cols if col in df.columns]
-        
-        if not existing_cols:
+        core_cols = ['stock_code', 'price_date', 'close_price']
+        existing_core = [col for col in core_cols if col in df.columns]
+
+        if len(existing_core) != len(core_cols):
             return pd.Series(False, index=df.index)
-        
-        # Has complete data if all OHLCV columns are non-null
-        return df[existing_cols].notna().all(axis=1)
+
+        completeness = df[existing_core].notna().all(axis=1)
+
+        # Treat daily change fields as part of completeness only when they are present.
+        for optional_col in ['change_1d_pct', 'change_ytd_pct']:
+            if optional_col in df.columns:
+                completeness = completeness & df[optional_col].notna()
+
+        return completeness
     
     def _fill_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
         """Fill missing values with appropriate defaults."""

@@ -8,7 +8,7 @@ Supports bulk operations for efficient data loading and reconciliation workflows
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import date, datetime
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, desc, func, or_
+from sqlalchemy import and_, case, desc, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from decimal import Decimal
 import pandas as pd
@@ -51,7 +51,7 @@ class StagingRepository(BaseRepository[StagingDailyPrice]):
         Args:
             df: DataFrame with columns: stock_code, price_date, close_price,
                 change_1d_pct, change_ytd_pct, volume
-            source: Data source identifier ('afrimarket')
+            source: Data source identifier
             batch_size: Records per batch for insertion
             
         Returns:
@@ -88,29 +88,49 @@ class StagingRepository(BaseRepository[StagingDailyPrice]):
                 
                 if len(records) >= batch_size:
                     stmt = insert(StagingDailyPrice).values(records)
-                    stmt = stmt.on_conflict_do_nothing(
-                        index_elements=["stock_code", "price_date", "source"]
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=["stock_code", "price_date", "source"],
+                        set_={
+                            "close_price": stmt.excluded.close_price,
+                            "change_1d_pct": stmt.excluded.change_1d_pct,
+                            "change_ytd_pct": stmt.excluded.change_ytd_pct,
+                            "volume": stmt.excluded.volume,
+                            "loaded_at": stmt.excluded.loaded_at,
+                            "reconciled": False,
+                            "promoted_at": None,
+                            "reconciliation_notes": None,
+                        }
                     )
                     result = self.session.execute(stmt)
                     self.session.commit()
                     inserted = result.rowcount or 0
                     total_inserted += inserted
                     logger.debug(
-                        f"Inserted batch of {inserted} records (ignored duplicates: {len(records) - inserted})"
+                        f"Upserted batch of {inserted} staging records"
                     )
                     records = []
             
             if records:
                 stmt = insert(StagingDailyPrice).values(records)
-                stmt = stmt.on_conflict_do_nothing(
-                    index_elements=["stock_code", "price_date", "source"]
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["stock_code", "price_date", "source"],
+                    set_={
+                        "close_price": stmt.excluded.close_price,
+                        "change_1d_pct": stmt.excluded.change_1d_pct,
+                        "change_ytd_pct": stmt.excluded.change_ytd_pct,
+                        "volume": stmt.excluded.volume,
+                        "loaded_at": stmt.excluded.loaded_at,
+                        "reconciled": False,
+                        "promoted_at": None,
+                        "reconciliation_notes": None,
+                    }
                 )
                 result = self.session.execute(stmt)
                 self.session.commit()
                 inserted = result.rowcount or 0
                 total_inserted += inserted
                 logger.debug(
-                    f"Inserted final batch of {inserted} records (ignored duplicates: {len(records) - inserted})"
+                    f"Upserted final batch of {inserted} staging records"
                 )
             
             logger.info(f"Bulk inserted {total_inserted} records from {source}")
@@ -260,6 +280,33 @@ class StagingRepository(BaseRepository[StagingDailyPrice]):
             query = query.limit(limit)
         
         return query.all()
+
+    def get_reconciled_by_date(
+        self,
+        price_date: date
+    ) -> List[StagingDailyPrice]:
+        """
+        Get reconciled staging records for a specific trading date (incremental processing).
+        
+        This method is optimized for daily DAG runs that should only process today's data,
+        not the entire historical staging table.
+        
+        Args:
+            price_date: Trading date to retrieve reconciled records for
+            
+        Returns:
+            List of reconciled staging records for the specified date
+        """
+        query = self.session.query(StagingDailyPrice).filter(
+            and_(
+                StagingDailyPrice.reconciled == True,
+                StagingDailyPrice.price_date == price_date
+            )
+        )
+        
+        query = query.order_by(StagingDailyPrice.stock_code)
+        
+        return query.all()
     
     def get_conflicts(
         self,
@@ -309,7 +356,8 @@ class StagingRepository(BaseRepository[StagingDailyPrice]):
     def mark_reconciled(
         self,
         staging_ids: List[int],
-        reconciliation_notes: Optional[str] = None
+        reconciliation_notes: Optional[str] = None,
+        commit: bool = True
     ) -> int:
         """
         Mark staging records as reconciled.
@@ -335,7 +383,8 @@ class StagingRepository(BaseRepository[StagingDailyPrice]):
                 )
             )
             
-            self.session.commit()
+            if commit:
+                self.session.commit()
             logger.info(f"Marked {updated} staging records as reconciled")
             
             return updated
@@ -381,7 +430,8 @@ class StagingRepository(BaseRepository[StagingDailyPrice]):
         selected_price: Decimal,
         selected_source: Optional[str],
         conflict_severity: str,
-        notes: Optional[str] = None
+        notes: Optional[str] = None,
+        commit: bool = True
     ) -> StagingAuditLog:
         """
         Create an audit log entry for reconciliation.
@@ -414,7 +464,8 @@ class StagingRepository(BaseRepository[StagingDailyPrice]):
             )
             
             self.session.add(audit_log)
-            self.session.commit()
+            if commit:
+                self.session.commit()
             
             logger.debug(
                 f"Created audit log for {stock_code} on {price_date}: "
@@ -427,6 +478,245 @@ class StagingRepository(BaseRepository[StagingDailyPrice]):
             self.session.rollback()
             logger.error(f"Failed to create audit log: {e}")
             raise DatabaseError(f"Audit log creation failed: {str(e)}") from e
+
+    def get_reconciled_since(
+        self,
+        promoted_after: datetime,
+        limit: Optional[int] = None
+    ) -> List[StagingDailyPrice]:
+        """
+        Get staging records reconciled after a specific timestamp.
+
+        Args:
+            promoted_after: Lower bound for promoted_at timestamp
+            limit: Maximum records to return (optional)
+
+        Returns:
+            List of recently reconciled staging records
+        """
+        query = (
+            self.session.query(StagingDailyPrice)
+            .filter(
+                StagingDailyPrice.reconciled == True,
+                StagingDailyPrice.promoted_at.isnot(None),
+                StagingDailyPrice.promoted_at >= promoted_after
+            )
+            .order_by(
+                StagingDailyPrice.price_date.desc(),
+                StagingDailyPrice.stock_code
+            )
+        )
+
+        if limit:
+            query = query.limit(limit)
+
+        return query.all()
+
+    def get_reconciled_missing_from_fact(
+        self,
+        promoted_after: Optional[datetime] = None,
+        price_dates: Optional[List[date]] = None,
+        limit: Optional[int] = None,
+    ) -> List[StagingDailyPrice]:
+        """
+        Get reconciled staging rows that have not yet been promoted to fact_daily_prices.
+
+        This is the safe handoff query for downstream promotion because it finds the
+        exact staging rows whose stock/date pair is still missing from production.
+        It is especially important after historical backfills, where many old dates
+        may already be reconciled but still not present in fact_daily_prices.
+        """
+        query = (
+            self.session.query(StagingDailyPrice)
+            .join(
+                DimStock,
+                DimStock.stock_code == StagingDailyPrice.stock_code,
+            )
+            .outerjoin(
+                FactDailyPrice,
+                and_(
+                    FactDailyPrice.stock_id == DimStock.stock_id,
+                    FactDailyPrice.price_date == StagingDailyPrice.price_date,
+                ),
+            )
+            .filter(
+                StagingDailyPrice.reconciled.is_(True),
+                FactDailyPrice.price_id.is_(None),
+            )
+        )
+
+        if promoted_after is not None:
+            query = query.filter(
+                StagingDailyPrice.promoted_at.isnot(None),
+                StagingDailyPrice.promoted_at >= promoted_after,
+            )
+
+        if price_dates:
+            query = query.filter(StagingDailyPrice.price_date.in_(price_dates))
+
+        query = query.order_by(
+            StagingDailyPrice.price_date.asc(),
+            StagingDailyPrice.stock_code.asc(),
+            StagingDailyPrice.promoted_at.asc().nulls_last(),
+            StagingDailyPrice.staging_id.asc(),
+        )
+
+        if limit:
+            query = query.limit(limit)
+
+        return query.all()
+
+    def get_canonical_reconciled_for_fact_sync(
+        self,
+        promoted_after: Optional[datetime] = None,
+        price_dates: Optional[List[date]] = None,
+        only_missing_from_fact: bool = False,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return one canonical reconciled row per stock/date for fact promotion.
+
+        The canonical price/source comes from the latest reconciliation audit log.
+        This avoids promoting every reconciled source row and then relying on an
+        arbitrary dataframe dedupe to pick the production record.
+        """
+        latest_audit_ranked = (
+            select(
+                StagingAuditLog.stock_code.label("stock_code"),
+                StagingAuditLog.price_date.label("price_date"),
+                StagingAuditLog.selected_price.label("selected_price"),
+                StagingAuditLog.selected_source.label("selected_source"),
+                func.row_number().over(
+                    partition_by=(
+                        StagingAuditLog.stock_code,
+                        StagingAuditLog.price_date,
+                    ),
+                    order_by=(
+                        StagingAuditLog.created_at.desc(),
+                        StagingAuditLog.audit_id.desc(),
+                    ),
+                ).label("rn"),
+            ).subquery("latest_audit_ranked")
+        )
+
+        latest_audit = (
+            select(
+                latest_audit_ranked.c.stock_code,
+                latest_audit_ranked.c.price_date,
+                latest_audit_ranked.c.selected_price,
+                latest_audit_ranked.c.selected_source,
+            )
+            .where(latest_audit_ranked.c.rn == 1)
+            .subquery("latest_audit")
+        )
+
+        preferred_source_rank = case(
+            (
+                or_(
+                    latest_audit.c.selected_source.is_(None),
+                    latest_audit.c.selected_source == "averaged",
+                    StagingDailyPrice.source == latest_audit.c.selected_source,
+                ),
+                0,
+            ),
+            else_=1,
+        )
+
+        canonical_source = case(
+            (
+                latest_audit.c.selected_source.isnot(None),
+                latest_audit.c.selected_source,
+            ),
+            else_=StagingDailyPrice.source,
+        )
+
+        candidate_rows = (
+            select(
+                StagingDailyPrice.stock_code.label("stock_code"),
+                StagingDailyPrice.price_date.label("price_date"),
+                func.coalesce(
+                    latest_audit.c.selected_price,
+                    StagingDailyPrice.close_price,
+                ).label("close_price"),
+                StagingDailyPrice.change_1d_pct.label("change_1d_pct"),
+                StagingDailyPrice.change_ytd_pct.label("change_ytd_pct"),
+                StagingDailyPrice.volume.label("volume"),
+                canonical_source.label("source"),
+                StagingDailyPrice.promoted_at.label("promoted_at"),
+                func.row_number().over(
+                    partition_by=(
+                        StagingDailyPrice.stock_code,
+                        StagingDailyPrice.price_date,
+                    ),
+                    order_by=(
+                        preferred_source_rank.asc(),
+                        StagingDailyPrice.staging_id.asc(),
+                    ),
+                ).label("rn"),
+            )
+            .select_from(StagingDailyPrice)
+            .outerjoin(
+                latest_audit,
+                and_(
+                    latest_audit.c.stock_code == StagingDailyPrice.stock_code,
+                    latest_audit.c.price_date == StagingDailyPrice.price_date,
+                ),
+            )
+            .where(StagingDailyPrice.reconciled.is_(True))
+        )
+
+        if promoted_after is not None:
+            candidate_rows = candidate_rows.where(
+                StagingDailyPrice.promoted_at.isnot(None),
+                StagingDailyPrice.promoted_at >= promoted_after,
+            )
+
+        if price_dates:
+            candidate_rows = candidate_rows.where(
+                StagingDailyPrice.price_date.in_(price_dates)
+            )
+
+        if only_missing_from_fact:
+            candidate_rows = (
+                candidate_rows
+                .join(
+                    DimStock,
+                    DimStock.stock_code == StagingDailyPrice.stock_code,
+                )
+                .outerjoin(
+                    FactDailyPrice,
+                    and_(
+                        FactDailyPrice.stock_id == DimStock.stock_id,
+                        FactDailyPrice.price_date == StagingDailyPrice.price_date,
+                    ),
+                )
+                .where(FactDailyPrice.price_id.is_(None))
+            )
+
+        candidate_subquery = candidate_rows.subquery("canonical_candidate_rows")
+        stmt = (
+            select(
+                candidate_subquery.c.stock_code,
+                candidate_subquery.c.price_date,
+                candidate_subquery.c.close_price,
+                candidate_subquery.c.change_1d_pct,
+                candidate_subquery.c.change_ytd_pct,
+                candidate_subquery.c.volume,
+                candidate_subquery.c.source,
+                candidate_subquery.c.promoted_at,
+            )
+            .where(candidate_subquery.c.rn == 1)
+            .order_by(
+                candidate_subquery.c.price_date.asc(),
+                candidate_subquery.c.stock_code.asc(),
+            )
+        )
+
+        if limit:
+            stmt = stmt.limit(limit)
+
+        rows = self.session.execute(stmt).mappings().all()
+        return [dict(row) for row in rows]
     
     def get_staging_summary(self, price_date: date) -> Dict[str, Any]:
         """

@@ -5,13 +5,16 @@ Uses the afrimarket package to fetch historical and current price data
 for Nigerian stocks from the NGXGROUP exchange.
 """
 
+import re
 import time
+from io import StringIO
 from typing import Optional, List
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 import pandas as pd
+import requests
 
-from app.services.data_sources.base import DataSource
+from app.services.data_sources.base import DataSource, SourceCapabilities
 from app.utils import retry
 from app.utils.exceptions import DataFetchError, DataParseError
 from app.utils.logger import get_logger
@@ -51,12 +54,89 @@ class AfrimarketDataSource(DataSource):
         >>> df = source.fetch()  # Current prices for all stocks
     """
     
+    LISTED_COMPANY_COLUMNS = {"Ticker", "Name", "Volume", "Price", "Change"}
+    REQUEST_TIMEOUT_SECONDS = 30
+
     def __init__(self):
         """Initialize Afrimarket data source."""
         super().__init__("afrimarket")
         self.market = 'ngx'
+        self.market_url = f"https://afx.kwayisi.org/{self.market}/"
         self.exchange = afm.Exchange(market=self.market)
         self.logger = get_logger("datasource.afrimarket")
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+                )
+            }
+        )
+
+    def _fetch_market_page(self, url: str) -> tuple[str, str]:
+        """Fetch a raw Afrimarket HTML page."""
+        response = self.session.get(url, timeout=self.REQUEST_TIMEOUT_SECONDS)
+        response.raise_for_status()
+        return response.text, getattr(response, "url", url)
+
+    def _extract_listed_companies_table(self, html: str) -> pd.DataFrame:
+        """Extract the listed-companies table from a market page."""
+        try:
+            tables = pd.read_html(StringIO(html))
+        except ValueError as exc:
+            raise DataParseError("No HTML tables found on Afrimarket market page") from exc
+
+        for table in tables:
+            normalized_columns = {str(column).strip() for column in table.columns}
+            if self.LISTED_COMPANY_COLUMNS.issubset(normalized_columns):
+                return table.copy()
+
+        raise DataParseError(
+            "Listed companies table not found on Afrimarket market page"
+        )
+
+    def _extract_next_page_url(self, html: str) -> Optional[str]:
+        """Return the next-page URL if the market page is paginated."""
+        match = re.search(r'rel=next href="([^"]+)"', html)
+        if not match:
+            return None
+        return match.group(1)
+
+    def _get_listed_companies(self) -> pd.DataFrame:
+        """Fetch and combine all listed companies pages from Afrimarket."""
+        frames: list[pd.DataFrame] = []
+        seen_urls: set[str] = set()
+        next_url: Optional[str] = self.market_url
+
+        while next_url and next_url not in seen_urls:
+            html, resolved_url = self._fetch_market_page(next_url)
+            seen_urls.add(resolved_url)
+
+            page_df = self._extract_listed_companies_table(html)
+            frames.append(page_df)
+
+            next_url = self._extract_next_page_url(html)
+
+        if not frames:
+            return pd.DataFrame()
+
+        combined = pd.concat(frames, ignore_index=True)
+        combined = combined.drop_duplicates(subset=["Ticker"], keep="first")
+        return combined.reset_index(drop=True)
+
+    def get_capabilities(self) -> SourceCapabilities:
+        """Describe the live capabilities of the Afrimarket adapter."""
+        return SourceCapabilities(
+            source_name=self.source_name,
+            has_current_quotes=True,
+            has_historical_eod=True,
+            has_volume=True,
+            has_change_1d_pct=False,
+            has_change_ytd_pct=False,
+            has_official_eod=False,
+            has_documents=False,
+        )
         
     @retry(max_attempts=3, delay=2.0)
     def fetch(
@@ -92,19 +172,21 @@ class AfrimarketDataSource(DataSource):
             self.logger.info("Fetching current prices from afrimarket API")
             
             # Get listed companies (has current prices)
-            df = self.exchange.get_listed_companies()
+            df = self._get_listed_companies()
             
             if df is None or df.empty:
                 raise DataFetchError("No data returned from afrimarket API")
             
-            # Standardize column names based on actual API
-            # Columns: ['Ticker', 'Name', 'Volume', 'Price', 'Change']
+            # Standardize column names based on actual API.
+            # Afrimarket's current "Change" field is an absolute price move,
+            # not a percentage move, so we keep it separate and derive
+            # change_1d_pct later from trusted historical prices.
             df = df.rename(columns={
                 'Ticker': 'stock_code',
                 'Name': 'company_name',
                 'Price': 'close_price',
                 'Volume': 'volume',
-                'Change': 'change_1d_pct'
+                'Change': 'price_change_amount'
             })
             
             # Add metadata
@@ -121,7 +203,7 @@ class AfrimarketDataSource(DataSource):
                 'close_price',
                 'source',
                 'volume',
-                'change_1d_pct'
+                'price_change_amount'
             ]
             df = df[keep_cols]
             
@@ -133,7 +215,7 @@ class AfrimarketDataSource(DataSource):
 
             # Normalize numeric fields
             df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
-            df['change_1d_pct'] = pd.to_numeric(df['change_1d_pct'], errors='coerce')
+            df['price_change_amount'] = pd.to_numeric(df['price_change_amount'], errors='coerce')
             
             # Validate
             self.validate_dataframe(df)
@@ -288,7 +370,7 @@ class AfrimarketDataSource(DataSource):
         try:
             self.logger.info("Fetching list of all available stocks")
             
-            df = self.exchange.get_listed_companies()
+            df = self._get_listed_companies()
             
             if df is None or df.empty:
                 return []

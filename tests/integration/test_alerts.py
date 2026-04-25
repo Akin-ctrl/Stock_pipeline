@@ -256,7 +256,7 @@ class TestAlertRepository:
     def test_get_all_active_rules(self, db_session, sample_alert_rules):
         """Test retrieving only active rules."""
         alert_repo = AlertRepository(db_session)
-        
+
         # Create mix of active and inactive rules
         for i, rule in enumerate(sample_alert_rules):
             rule.is_active = (i % 2 == 0)  # Alternate active/inactive
@@ -268,6 +268,45 @@ class TestAlertRepository:
         
         assert len(active_rules) > 0
         assert all(rule.is_active for rule in active_rules)
+
+    def test_deduplicate_existing_rows(self, db_session, sample_sectors, sample_stocks, sample_alert_rules):
+        """Duplicate alert rows should be collapsed to the newest row per stock/rule/date."""
+        alert_repo = AlertRepository(db_session)
+        stock = sample_stocks[0]
+        rule = sample_alert_rules[0]
+        alert_date = date.today()
+
+        db_session.add_all([
+            AlertHistory(
+                stock_id=stock.stock_id,
+                rule_id=rule.rule_id,
+                alert_date=alert_date,
+                alert_type=rule.rule_type,
+                severity="WARNING",
+                message="older duplicate",
+            ),
+            AlertHistory(
+                stock_id=stock.stock_id,
+                rule_id=rule.rule_id,
+                alert_date=alert_date,
+                alert_type=rule.rule_type,
+                severity="WARNING",
+                message="newer duplicate",
+            ),
+        ])
+        db_session.commit()
+
+        deleted = alert_repo.deduplicate_existing_rows()
+        db_session.commit()
+
+        remaining = db_session.query(AlertHistory).filter(
+            AlertHistory.stock_id == stock.stock_id,
+            AlertHistory.rule_id == rule.rule_id,
+            AlertHistory.alert_date == alert_date,
+        ).all()
+
+        assert deleted == 1
+        assert len(remaining) == 1
     
     def test_alert_exists(self, db_session, sample_sectors, sample_stocks, sample_alert_rules):
         """Test checking if alert exists."""

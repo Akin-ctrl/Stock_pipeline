@@ -24,7 +24,7 @@ class FactDailyPrice(Base, TimestampMixin):
     """
     Daily stock price fact table (time-series).
     
-    Stores daily closing price and derived metrics for each stock.
+    Stores canonical daily closing price and derived metrics for each stock.
     
     Attributes:
         price_id: Primary key
@@ -33,7 +33,12 @@ class FactDailyPrice(Base, TimestampMixin):
         close_price: Closing price (required)
         change_1d_pct: Daily percentage change
         change_ytd_pct: Year-to-date percentage change
-        source: Data source identifier (afrimarket)
+        volume: Trading volume
+        source: Selected source identifier for the promoted daily record
+        source_count: Number of source observations considered for this daily record
+        bar_status: Promotion/trust state ('OBSERVED', 'RECONCILED', 'OFFICIAL', 'ESTIMATED')
+        is_official: Whether the row comes from an official market source
+        confidence_score: Confidence score for the promoted row (0-100)
         data_quality_flag: Quality indicator ('GOOD', 'INCOMPLETE', 'SUSPICIOUS', 'MISSING', 'STALE', 'POOR')
         has_complete_data: Whether all expected fields are present
         ingestion_timestamp: When data was ingested
@@ -55,6 +60,7 @@ class FactDailyPrice(Base, TimestampMixin):
     
     # Price Data
     close_price = Column(Numeric(18, 4), nullable=False)
+    volume = Column(BigInteger)
     
     # Calculated Fields (from source)
     change_1d_pct = Column(Numeric(10, 4))
@@ -62,6 +68,10 @@ class FactDailyPrice(Base, TimestampMixin):
     
     # Metadata
     source = Column(String(50), nullable=False)
+    source_count = Column(Integer, nullable=False, default=1)
+    bar_status = Column(String(20), nullable=False, default='OBSERVED')
+    is_official = Column(Boolean, nullable=False, default=False)
+    confidence_score = Column(Numeric(5, 2))
     data_quality_flag = Column(String(20), default='GOOD')
     has_complete_data = Column(Boolean, default=True)
     ingestion_timestamp = Column(TIMESTAMP, server_default=func.now())
@@ -73,6 +83,18 @@ class FactDailyPrice(Base, TimestampMixin):
         CheckConstraint(
             "data_quality_flag IN ('GOOD', 'INCOMPLETE', 'SUSPICIOUS', 'MISSING', 'STALE', 'POOR')",
             name='chk_data_quality'
+        ),
+        CheckConstraint(
+            "bar_status IN ('OBSERVED', 'RECONCILED', 'OFFICIAL', 'ESTIMATED')",
+            name='chk_bar_status'
+        ),
+        CheckConstraint(
+            'source_count >= 1',
+            name='chk_source_count_positive'
+        ),
+        CheckConstraint(
+            'confidence_score IS NULL OR confidence_score BETWEEN 0 AND 100',
+            name='chk_confidence_score_range'
         ),
         Index('idx_stock_date', 'stock_id', 'price_date', unique=True),
     )
@@ -98,21 +120,20 @@ class FactDailyPrice(Base, TimestampMixin):
         """Check if data quality is flagged as suspicious."""
         return self.data_quality_flag in ('SUSPICIOUS', 'MISSING', 'STALE')
     
-    def validate_ohlc(self) -> bool:
+    def validate_price_fields(self) -> bool:
         """
-        Validate OHLC logic: high >= low, close within range.
+        Validate close price and volume fields.
         
         Returns:
-            True if OHLC data is valid or incomplete, False if invalid
+            True if fields are valid, False otherwise
         """
-        if None in (self.open_price, self.high_price, self.low_price, self.close_price):
-            return True  # Incomplete data, can't validate
-        
-        return (
-            float(self.high_price) >= float(self.low_price) and
-            float(self.high_price) >= float(self.close_price) and
-            float(self.low_price) <= float(self.close_price)
-        )
+        if self.close_price is None:
+            return False
+        if float(self.close_price) <= 0:
+            return False
+        if self.volume is not None and int(self.volume) < 0:
+            return False
+        return True
 
 
 class FactTechnicalIndicator(Base, TimestampMixin):
@@ -376,7 +397,12 @@ class FactRecommendation(Base, TimestampMixin):
             'overall_score >= 0 AND overall_score <= 100',
             name='chk_overall_score'
         ),
-        Index('ix_recommendation_stock_date', 'stock_id', 'recommendation_date'),
+        Index(
+            'ux_recommendation_stock_date',
+            'stock_id',
+            'recommendation_date',
+            unique=True
+        ),
     )
     
     def __repr__(self) -> str:
