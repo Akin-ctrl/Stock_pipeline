@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: stock_pipeline_db
+    container_name: stock_pipeline_db_v2
     restart: unless-stopped
     env_file:
       - .env
@@ -11,7 +11,7 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - AIRFLOW_DB=${AIRFLOW_DB}
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh
@@ -33,12 +33,12 @@ services:
 
   pgadmin:
     image: dpage/pgadmin4:latest
-    container_name: stock_pipeline_pgadmin
+    container_name: stock_pipeline_pgadmin_v2
     restart: unless-stopped
     env_file:
       - .env
     ports:
-      - "5050:80"
+      - "5051:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     depends_on:
@@ -55,14 +55,41 @@ services:
           cpus: '0.1'
           memory: 128M
 
+  metabase:
+    image: metabase/metabase:latest
+    container_name: stock_pipeline_metabase_v2
+    restart: unless-stopped
+    environment:
+      - MB_DB_FILE=/metabase-data/metabase.db
+    ports:
+      - "3000:3000"
+    volumes:
+      - metabase_data:/metabase-data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - stock_network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
   app:
     build:
       context: .
       dockerfile: app/Dockerfile
-    container_name: stock_pipeline_app
+    image: stock_pipeline_app:v2
+    container_name: stock_pipeline_app_v2
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - POSTGRES_PORT=5432
     volumes:
       - ./app:/app
       - ./data:/data
@@ -87,8 +114,8 @@ services:
     build:
       context: .
       dockerfile: airflow/Dockerfile
-    image: stock_pipeline_airflow:2.10.4
-    container_name: stock_pipeline_airflow_webserver
+    image: stock_pipeline_airflow:v2
+    container_name: stock_pipeline_airflow_webserver_v2
     restart: unless-stopped
     env_file:
       - .env
@@ -101,12 +128,14 @@ services:
       - AIRFLOW__CORE__DEFAULT_TIMEZONE=Africa/Lagos
       - AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True
       - AIRFLOW__WEBSERVER__SECRET_KEY=${AIRFLOW_WEBSERVER_SECRET_KEY}
+      - POSTGRES_PORT=5432
       - PYTHONPATH=/Stock_pipeline
     volumes:
       - ./airflow/dags:/opt/airflow/dags
-      - airflow_logs:/opt/airflow/logs
+      - airflow_logs_v2:/opt/airflow/logs
       - ./airflow/plugins:/opt/airflow/plugins
       - ./app:/Stock_pipeline/app
+      - ./scripts:/Stock_pipeline/scripts
       - ./data:/data
       - ./logs:/logs
       - ./reports:/reports
@@ -136,8 +165,8 @@ services:
           memory: 512M
 
   airflow-scheduler:
-    image: stock_pipeline_airflow:2.10.4
-    container_name: stock_pipeline_airflow_scheduler
+    image: stock_pipeline_airflow:v2
+    container_name: stock_pipeline_airflow_scheduler_v2
     restart: unless-stopped
     env_file:
       - .env
@@ -148,12 +177,14 @@ services:
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
       - AIRFLOW__CORE__DEFAULT_TIMEZONE=Africa/Lagos
+      - POSTGRES_PORT=5432
       - PYTHONPATH=/Stock_pipeline
     volumes:
       - ./airflow/dags:/opt/airflow/dags
-      - airflow_logs:/opt/airflow/logs
+      - airflow_logs_v2:/opt/airflow/logs
       - ./airflow/plugins:/opt/airflow/plugins
       - ./app:/Stock_pipeline/app
+      - ./scripts:/Stock_pipeline/scripts
       - ./data:/data
       - ./logs:/logs
       - ./reports:/reports
@@ -181,8 +212,8 @@ services:
           memory: 512M
 
   airflow-init:
-    image: stock_pipeline_airflow:2.10.4
-    container_name: stock_pipeline_airflow_init
+    image: stock_pipeline_airflow:v2
+    container_name: stock_pipeline_airflow_init_v2
     env_file:
       - .env
     environment:
@@ -190,13 +221,14 @@ services:
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${AIRFLOW_DB}
       - AIRFLOW__CORE__FERNET_KEY=${AIRFLOW_FERNET_KEY}
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - POSTGRES_PORT=5432
       - _AIRFLOW_DB_MIGRATE=true
       - _AIRFLOW_WWW_USER_CREATE=true
       - _AIRFLOW_WWW_USER_USERNAME=${AIRFLOW_ADMIN_USERNAME}
       - _AIRFLOW_WWW_USER_PASSWORD=${AIRFLOW_ADMIN_PASSWORD}
     volumes:
       - ./airflow/dags:/opt/airflow/dags
-      - airflow_logs:/opt/airflow/logs
+      - airflow_logs_v2:/opt/airflow/logs
       - ./airflow/plugins:/opt/airflow/plugins
     depends_on:
       postgres:
@@ -218,12 +250,13 @@ networks:
   stock_network:
     driver: bridge
     driver_opts:
-      com.docker.network.bridge.name: stock_bridge
+      com.docker.network.bridge.name: stock_bridge_v2
     ipam:
       config:
-        - subnet: 172.20.0.0/16
+        - subnet: 172.21.0.0/16
 
 volumes:
   postgres_data:
+  metabase_data:
   pgadmin_data:
-  airflow_logs:
+  airflow_logs_v2:

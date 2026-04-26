@@ -8,6 +8,7 @@ Supports various rule types: price movements, MA crossovers, RSI extremes, volat
 from typing import Dict, List, Optional, Tuple
 from datetime import date, datetime, timedelta
 from dataclasses import dataclass
+import json
 import pandas as pd
 from sqlalchemy.orm import Session
 
@@ -59,6 +60,28 @@ class AlertEvaluator:
         self.stock_repo = StockRepository(self.session)
         self.price_repo = PriceRepository(self.session)
         self.indicator_repo = IndicatorRepository(self.session)
+
+    def _get_current_trusted_price(self, stock_id: int, evaluation_date: date):
+        """Get the latest trusted production price for alert evaluation."""
+        return self.price_repo.get_latest_trusted_price(
+            stock_id,
+            as_of_date=evaluation_date,
+            min_confidence=65.0,
+        )
+
+    def _get_current_indicator_context(self, stock, evaluation_date: date):
+        """
+        Return the latest indicator only when it lines up with a trusted price row.
+        """
+        trusted_price = self._get_current_trusted_price(stock.stock_id, evaluation_date)
+        if not trusted_price:
+            return None, None
+
+        indicator = self.indicator_repo.get_latest_by_code(stock.stock_code, evaluation_date)
+        if not indicator or indicator.calculation_date != trusted_price.price_date:
+            return None, trusted_price
+
+        return indicator, trusted_price
     
     def evaluate_all_rules(
         self,
@@ -194,6 +217,8 @@ class AlertEvaluator:
             return self._check_ma_crossover(rule, stock, evaluation_date)
         elif rule.rule_type == 'RSI':
             return self._check_rsi(rule, stock, evaluation_date)
+        elif rule.rule_type == 'MACD':
+            return self._check_macd(rule, stock, evaluation_date)
         elif rule.rule_type == 'VOLATILITY':
             return self._check_volatility(rule, stock, evaluation_date)
         elif rule.rule_type == 'VOLUME_SPIKE':
@@ -213,13 +238,18 @@ class AlertEvaluator:
     ) -> Optional[Dict]:
         """Check for significant price movements."""
         # Get latest price
-        price = self.price_repo.get_latest_by_code(stock.stock_code, evaluation_date)
+        price = self.price_repo.get_latest_trusted_by_code(
+            stock.stock_code,
+            evaluation_date,
+            min_confidence=65.0,
+        )
         
         if not price or price.change_1d_pct is None:
             return None
         
         # Parse threshold from rule parameters
-        threshold = float(rule.parameters.get('threshold', 5.0))
+        params = self._get_rule_parameters(rule)
+        threshold = float(params.get('threshold', 5.0))
         
         # Check if change exceeds threshold
         if abs(price.change_1d_pct) >= threshold:
@@ -233,8 +263,10 @@ class AlertEvaluator:
                 'stock_id': stock.stock_id,
                 'rule_id': rule.rule_id,
                 'alert_date': evaluation_date,
+                'alert_type': rule.rule_type,
                 'severity': rule.severity,
                 'message': message,
+                'trigger_value': float(abs(price.change_1d_pct)),
                 'metadata': {
                     'change_pct': price.change_1d_pct,
                     'close_price': float(price.close_price),
@@ -252,9 +284,9 @@ class AlertEvaluator:
     ) -> Optional[Dict]:
         """Check for moving average crossovers."""
         # Get latest indicator
-        indicator = self.indicator_repo.get_latest_by_code(stock.stock_code, evaluation_date)
+        indicator, trusted_price = self._get_current_indicator_context(stock, evaluation_date)
         
-        if not indicator or not indicator.ma_crossover_signal:
+        if not indicator or not trusted_price or not indicator.ma_crossover_signal:
             return None
         
         # Check if crossover matches rule criteria
@@ -266,12 +298,14 @@ class AlertEvaluator:
                 'stock_id': stock.stock_id,
                 'rule_id': rule.rule_id,
                 'alert_date': evaluation_date,
+                'alert_type': rule.rule_type,
                 'severity': rule.severity,
                 'message': message,
+                'trigger_value': float(indicator.ma_7) if indicator.ma_7 else None,
                 'metadata': {
                     'signal': 'BULLISH',
-                    'ma_short': float(indicator.ma_20) if indicator.ma_20 else None,
-                    'ma_long': float(indicator.ma_50) if indicator.ma_50 else None
+                    'ma_short': float(indicator.ma_7) if indicator.ma_7 else None,
+                    'ma_long': float(indicator.ma_30) if indicator.ma_30 else None
                 }
             }
         elif 'BEARISH' in signal_type and indicator.ma_crossover_signal == 'BEARISH':
@@ -280,12 +314,14 @@ class AlertEvaluator:
                 'stock_id': stock.stock_id,
                 'rule_id': rule.rule_id,
                 'alert_date': evaluation_date,
+                'alert_type': rule.rule_type,
                 'severity': rule.severity,
                 'message': message,
+                'trigger_value': float(indicator.ma_7) if indicator.ma_7 else None,
                 'metadata': {
                     'signal': 'BEARISH',
-                    'ma_short': float(indicator.ma_20) if indicator.ma_20 else None,
-                    'ma_long': float(indicator.ma_50) if indicator.ma_50 else None
+                    'ma_short': float(indicator.ma_7) if indicator.ma_7 else None,
+                    'ma_long': float(indicator.ma_30) if indicator.ma_30 else None
                 }
             }
         
@@ -299,24 +335,27 @@ class AlertEvaluator:
     ) -> Optional[Dict]:
         """Check for RSI oversold/overbought conditions."""
         # Get latest indicator
-        indicator = self.indicator_repo.get_latest_by_code(stock.stock_code, evaluation_date)
+        indicator, trusted_price = self._get_current_indicator_context(stock, evaluation_date)
         
-        if not indicator or indicator.rsi is None:
+        if not indicator or not trusted_price or indicator.rsi_14 is None:
             return None
         
-        rsi_value = float(indicator.rsi)
+        rsi_value = float(indicator.rsi_14)
+        params = self._get_rule_parameters(rule)
         
         # Check for oversold
         if 'OVERSOLD' in rule.rule_name.upper():
-            threshold = float(rule.parameters.get('oversold', 30))
+            threshold = float(params.get('oversold', 30))
             if rsi_value <= threshold:
                 message = f"{stock.stock_code}: RSI oversold at {rsi_value:.2f} (threshold: {threshold})"
                 return {
                     'stock_id': stock.stock_id,
                     'rule_id': rule.rule_id,
                     'alert_date': evaluation_date,
+                    'alert_type': rule.rule_type,
                     'severity': rule.severity,
                     'message': message,
+                    'trigger_value': rsi_value,
                     'metadata': {
                         'rsi': rsi_value,
                         'threshold': threshold,
@@ -326,15 +365,17 @@ class AlertEvaluator:
         
         # Check for overbought
         elif 'OVERBOUGHT' in rule.rule_name.upper():
-            threshold = float(rule.parameters.get('overbought', 70))
+            threshold = float(params.get('overbought', 70))
             if rsi_value >= threshold:
                 message = f"{stock.stock_code}: RSI overbought at {rsi_value:.2f} (threshold: {threshold})"
                 return {
                     'stock_id': stock.stock_id,
                     'rule_id': rule.rule_id,
                     'alert_date': evaluation_date,
+                    'alert_type': rule.rule_type,
                     'severity': rule.severity,
                     'message': message,
+                    'trigger_value': rsi_value,
                     'metadata': {
                         'rsi': rsi_value,
                         'threshold': threshold,
@@ -343,6 +384,73 @@ class AlertEvaluator:
                 }
         
         return None
+
+    def _check_macd(
+        self,
+        rule: AlertRule,
+        stock,
+        evaluation_date: date
+    ) -> Optional[Dict]:
+        """Check for MACD conditions."""
+        indicator, trusted_price = self._get_current_indicator_context(stock, evaluation_date)
+
+        if not indicator or not trusted_price or indicator.macd is None or indicator.macd_signal is None:
+            return None
+
+        macd_value = float(indicator.macd)
+        signal_value = float(indicator.macd_signal)
+        histogram_value = (
+            float(indicator.macd_histogram)
+            if indicator.macd_histogram is not None
+            else macd_value - signal_value
+        )
+
+        params = self._get_rule_parameters(rule)
+        threshold = abs(float(params.get('threshold', 0.0)))
+        rule_name = rule.rule_name.upper()
+
+        bullish_rule = 'BULL' in rule_name or 'BUY' in rule_name or 'POSITIVE' in rule_name
+        bearish_rule = 'BEAR' in rule_name or 'SELL' in rule_name or 'NEGATIVE' in rule_name
+
+        bullish_trigger = macd_value > signal_value and histogram_value >= threshold
+        bearish_trigger = macd_value < signal_value and abs(histogram_value) >= threshold
+
+        if bullish_rule and not bullish_trigger:
+            return None
+        if bearish_rule and not bearish_trigger:
+            return None
+
+        if not bullish_rule and not bearish_rule:
+            if bullish_trigger:
+                triggered_direction = 'BULLISH'
+            elif bearish_trigger:
+                triggered_direction = 'BEARISH'
+            else:
+                return None
+        else:
+            triggered_direction = 'BULLISH' if bullish_trigger else 'BEARISH'
+
+        message = (
+            f"{stock.stock_code}: MACD {triggered_direction.lower()} signal detected "
+            f"(MACD={macd_value:.4f}, Signal={signal_value:.4f}, Hist={histogram_value:.4f})"
+        )
+
+        return {
+            'stock_id': stock.stock_id,
+            'rule_id': rule.rule_id,
+            'alert_date': evaluation_date,
+            'alert_type': rule.rule_type,
+            'severity': rule.severity,
+            'message': message,
+            'trigger_value': histogram_value,
+            'metadata': {
+                'macd': macd_value,
+                'signal': signal_value,
+                'histogram': histogram_value,
+                'threshold': threshold,
+                'direction': triggered_direction,
+            }
+        }
     
     def _check_volatility(
         self,
@@ -352,13 +460,14 @@ class AlertEvaluator:
     ) -> Optional[Dict]:
         """Check for high volatility periods."""
         # Get latest indicator
-        indicator = self.indicator_repo.get_latest_by_code(stock.stock_code, evaluation_date)
+        indicator, trusted_price = self._get_current_indicator_context(stock, evaluation_date)
         
-        if not indicator or indicator.volatility_30 is None:
+        if not indicator or not trusted_price or indicator.volatility_30 is None:
             return None
         
         volatility = float(indicator.volatility_30)
-        threshold = float(rule.parameters.get('threshold', 0.3))
+        params = self._get_rule_parameters(rule)
+        threshold = float(params.get('threshold', 0.3))
         
         if volatility >= threshold:
             message = (
@@ -369,8 +478,10 @@ class AlertEvaluator:
                 'stock_id': stock.stock_id,
                 'rule_id': rule.rule_id,
                 'alert_date': evaluation_date,
+                'alert_type': rule.rule_type,
                 'severity': rule.severity,
                 'message': message,
+                'trigger_value': volatility,
                 'metadata': {
                     'volatility': volatility,
                     'threshold': threshold
@@ -390,29 +501,33 @@ class AlertEvaluator:
         end_date = evaluation_date
         start_date = evaluation_date - timedelta(days=30)
         
-        prices = self.price_repo.get_price_history(
+        prices = self.price_repo.get_trusted_price_history(
             stock.stock_id,
             start_date=start_date,
-            end_date=end_date
+            end_date=end_date,
+            min_confidence=75.0,
+            require_complete=True,
+            require_volume=True,
         )
         
         if len(prices) < 5:  # Need enough data
             return None
         
-        # Get latest price
-        latest = prices[-1]
+        # Price history is returned in descending order; first row is latest.
+        latest = prices[0]
         if latest.volume is None:
             return None
         
         # Calculate average volume (excluding today)
-        historical_volumes = [p.volume for p in prices[:-1] if p.volume is not None]
+        historical_volumes = [p.volume for p in prices[1:] if p.volume is not None]
         if not historical_volumes:
             return None
         
         avg_volume = sum(historical_volumes) / len(historical_volumes)
         
         # Check for spike
-        multiplier = float(rule.parameters.get('multiplier', 2.0))
+        params = self._get_rule_parameters(rule)
+        multiplier = float(params.get('multiplier', 2.0))
         if latest.volume >= avg_volume * multiplier:
             message = (
                 f"{stock.stock_code}: Volume spike detected - {latest.volume:,} "
@@ -422,8 +537,10 @@ class AlertEvaluator:
                 'stock_id': stock.stock_id,
                 'rule_id': rule.rule_id,
                 'alert_date': evaluation_date,
+                'alert_type': rule.rule_type,
                 'severity': rule.severity,
                 'message': message,
+                'trigger_value': float(latest.volume / avg_volume),
                 'metadata': {
                     'volume': int(latest.volume),
                     'avg_volume': int(avg_volume),
@@ -465,6 +582,42 @@ class AlertEvaluator:
         )
         
         return saved_count
+
+    def _get_rule_parameters(self, rule: AlertRule) -> Dict:
+        """Get rule parameters with backward-compatible fallbacks."""
+        raw_params = getattr(rule, 'parameters', None)
+
+        if isinstance(raw_params, dict):
+            return raw_params
+
+        if isinstance(raw_params, str) and raw_params.strip():
+            try:
+                parsed = json.loads(raw_params)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
+
+        params: Dict[str, float] = {}
+        if getattr(rule, 'threshold_value', None) is not None:
+            threshold_val = float(rule.threshold_value)
+            params['threshold'] = threshold_val
+            if rule.rule_type == 'RSI':
+                if 'OVERBOUGHT' in rule.rule_name.upper():
+                    params['overbought'] = threshold_val
+                elif 'OVERSOLD' in rule.rule_name.upper():
+                    params['oversold'] = threshold_val
+
+        condition_sql = getattr(rule, 'condition_sql', None)
+        if isinstance(condition_sql, str) and condition_sql.strip().startswith('{'):
+            try:
+                parsed = json.loads(condition_sql)
+                if isinstance(parsed, dict):
+                    params.update(parsed)
+            except Exception:
+                pass
+
+        return params
     
     def close(self):
         """Close database session."""

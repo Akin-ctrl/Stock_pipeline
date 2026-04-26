@@ -44,8 +44,11 @@ class DatabaseConfig:
     @property
     def connection_string(self) -> str:
         """Generate SQLAlchemy connection string."""
+        from urllib.parse import quote_plus
+        # URL-encode password to handle special characters like @
+        encoded_password = quote_plus(self.password)
         return (
-            f"postgresql://{self.user}:{self.password}@"
+            f"postgresql://{self.user}:{encoded_password}@"
             f"{self.host}:{self.port}/{self.database}"
         )
     
@@ -63,12 +66,10 @@ class DataSourceConfig:
     Data source configuration.
     
     Attributes:
-        ngx_url: URL for NGX stock data
         request_timeout: HTTP request timeout (seconds)
         max_retries: Maximum retry attempts
         user_agent: HTTP User-Agent header
     """
-    ngx_url: str
     request_timeout: int = 30
     max_retries: int = 5
     user_agent: str = (
@@ -205,7 +206,7 @@ class Settings:
         
         # Database configuration
         db_host = os.getenv("POSTGRES_HOST")
-        db_port = os.getenv("POSTGRES_PORT", "5432")
+        db_port = os.getenv("POSTGRES_PORT")
         db_name = os.getenv("POSTGRES_DB")
         db_user = os.getenv("POSTGRES_USER")
         db_password = os.getenv("POSTGRES_PASSWORD")
@@ -227,13 +228,7 @@ class Settings:
         )
         
         # Data source configuration
-        ngx_url = os.getenv(
-            "NGX_URL",
-            "https://www.african-markets.com/en/stock-markets/ngse/listed-companies"
-        )
-        
         data_sources = DataSourceConfig(
-            ngx_url=ngx_url,
             request_timeout=int(os.getenv("REQUEST_TIMEOUT", "30")),
             max_retries=int(os.getenv("MAX_RETRIES", "5"))
         )
@@ -265,7 +260,9 @@ class Settings:
         )
         
         # Path configuration
-        project_root = Path(os.getenv("PROJECT_ROOT", "/home/Stock_pipeline"))
+        # Default to 3 levels up from this file (app/config/settings.py -> app/config -> app -> root)
+        default_root = Path(__file__).resolve().parent.parent.parent
+        project_root = Path(os.getenv("PROJECT_ROOT", str(default_root)))
         paths = PathConfig.from_root(project_root)
         paths.create_directories()
         

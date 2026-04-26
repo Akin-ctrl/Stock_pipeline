@@ -26,8 +26,8 @@ class IndicatorCalculator:
     """
     
     # Default parameters
-    MA_SHORT_PERIOD = 20  # 20-day moving average
-    MA_LONG_PERIOD = 50   # 50-day moving average
+    MA_SHORT_PERIOD = 7   # 7-day moving average
+    MA_LONG_PERIOD = 30   # 30-day moving average
     RSI_PERIOD = 14       # 14-day RSI
     MACD_FAST = 12        # MACD fast EMA
     MACD_SLOW = 26        # MACD slow EMA
@@ -72,6 +72,22 @@ class IndicatorCalculator:
         self.bollinger_std = bollinger_std
         self.volatility_period = volatility_period
         self.logger = get_logger("indicator_calculator")
+
+    def minimum_history_required(self) -> int:
+        """
+        Minimum number of trusted price points required for mature indicators.
+
+        We require enough history for the 90-day trend features because the
+        strategy layer uses them directly for ranking and signals.
+        """
+        return max(
+            90,
+            self.ma_long,
+            self.rsi_period + 1,
+            self.macd_slow + self.macd_signal - 1,
+            self.bollinger_period,
+            self.volatility_period,
+        )
     
     def calculate_all(
         self,
@@ -82,7 +98,7 @@ class IndicatorCalculator:
         Calculate all technical indicators for price data.
         
         Args:
-            price_df: DataFrame with columns: price_date, close_price, high_price, low_price
+            price_df: DataFrame with columns: price_date, close_price
                      Must be sorted by price_date ascending
             stock_code: Optional stock code for logging
             
@@ -127,13 +143,19 @@ class IndicatorCalculator:
         # Short-term MA
         df[f'ma_{self.ma_short}'] = df['close_price'].rolling(
             window=self.ma_short,
-            min_periods=1
+            min_periods=self.ma_short
         ).mean()
         
         # Long-term MA
         df[f'ma_{self.ma_long}'] = df['close_price'].rolling(
             window=self.ma_long,
-            min_periods=1
+            min_periods=self.ma_long
+        ).mean()
+
+        # 90-day MA (stored in fact_technical_indicators)
+        df['ma_90'] = df['close_price'].rolling(
+            window=90,
+            min_periods=90
         ).mean()
         
         return df
@@ -148,26 +170,28 @@ class IndicatorCalculator:
         if 'close_price' not in df.columns:
             return df
         
-        # Calculate price changes
+        # Wilder RSI uses exponentially smoothed average gains/losses.
         delta = df['close_price'].diff()
-        
-        # Separate gains and losses
-        gain = (delta.where(delta > 0, 0)).rolling(
-            window=self.rsi_period,
-            min_periods=1
+        gain = delta.clip(lower=0)
+        loss = (-delta).clip(lower=0)
+
+        avg_gain = gain.ewm(
+            alpha=1 / self.rsi_period,
+            adjust=False,
+            min_periods=self.rsi_period
         ).mean()
-        
-        loss = (-delta.where(delta < 0, 0)).rolling(
-            window=self.rsi_period,
-            min_periods=1
+        avg_loss = loss.ewm(
+            alpha=1 / self.rsi_period,
+            adjust=False,
+            min_periods=self.rsi_period
         ).mean()
-        
-        # Calculate RS and RSI
-        rs = gain / loss.replace(0, np.nan)  # Avoid division by zero
+
+        rs = avg_gain / avg_loss.replace(0, np.nan)
         df['rsi'] = 100 - (100 / (1 + rs))
-        
-        # Handle edge cases
-        df['rsi'] = df['rsi'].fillna(50)  # Neutral RSI for missing values
+
+        # Edge cases after the warm-up window has been satisfied
+        df.loc[(avg_loss == 0) & (avg_gain > 0), 'rsi'] = 100.0
+        df.loc[(avg_gain == 0) & (avg_loss > 0), 'rsi'] = 0.0
         
         return df
     
@@ -186,13 +210,13 @@ class IndicatorCalculator:
         ema_fast = df['close_price'].ewm(
             span=self.macd_fast,
             adjust=False,
-            min_periods=1
+            min_periods=self.macd_fast
         ).mean()
         
         ema_slow = df['close_price'].ewm(
             span=self.macd_slow,
             adjust=False,
-            min_periods=1
+            min_periods=self.macd_slow
         ).mean()
         
         # MACD line
@@ -202,7 +226,7 @@ class IndicatorCalculator:
         df['macd_signal'] = df['macd_line'].ewm(
             span=self.macd_signal,
             adjust=False,
-            min_periods=1
+            min_periods=self.macd_signal
         ).mean()
         
         # Histogram
@@ -224,13 +248,13 @@ class IndicatorCalculator:
         # Middle band (SMA)
         df['bb_middle'] = df['close_price'].rolling(
             window=self.bollinger_period,
-            min_periods=1
+            min_periods=self.bollinger_period
         ).mean()
         
         # Standard deviation
         rolling_std = df['close_price'].rolling(
             window=self.bollinger_period,
-            min_periods=1
+            min_periods=self.bollinger_period
         ).std()
         
         # Upper and lower bands
@@ -254,11 +278,8 @@ class IndicatorCalculator:
         # Rolling volatility (30-day)
         df[f'volatility_{self.volatility_period}'] = returns.rolling(
             window=self.volatility_period,
-            min_periods=1
+            min_periods=self.volatility_period
         ).std() * np.sqrt(252)  # Annualized
-        
-        # Fill missing values
-        df[f'volatility_{self.volatility_period}'] = df[f'volatility_{self.volatility_period}'].fillna(0)
         
         return df
     
@@ -285,6 +306,9 @@ class IndicatorCalculator:
             prev_long = df[ma_long_col].iloc[i-1]
             curr_short = df[ma_short_col].iloc[i]
             curr_long = df[ma_long_col].iloc[i]
+
+            if any(pd.isna(value) for value in (prev_short, prev_long, curr_short, curr_long)):
+                continue
             
             # Bullish crossover (golden cross)
             if prev_short <= prev_long and curr_short > curr_long:
@@ -317,25 +341,34 @@ class IndicatorCalculator:
         
         # Convert to DataFrame
         df = pd.DataFrame(price_history)
+
+        minimum_history = self.minimum_history_required()
+        if len(df) < minimum_history:
+            self.logger.debug(
+                f"Skipping {stock_code}: need at least {minimum_history} trusted prices, got {len(df)}"
+            )
+            return []
         
         # Calculate all indicators
         df = self.calculate_all(df, stock_code=stock_code)
+        df = df.iloc[minimum_history - 1:].copy()
         
         # Prepare for database insertion
         indicators = []
         for _, row in df.iterrows():
             indicator = {
                 'stock_id': stock_id,
-                'indicator_date': row['price_date'],
+                'calculation_date': row['price_date'],
                 f'ma_{self.ma_short}': self._to_float(row.get(f'ma_{self.ma_short}')),
                 f'ma_{self.ma_long}': self._to_float(row.get(f'ma_{self.ma_long}')),
-                'rsi': self._to_float(row.get('rsi')),
-                'macd_line': self._to_float(row.get('macd_line')),
+                'ma_90': self._to_float(row.get('ma_90')),
+                'rsi_14': self._to_float(row.get('rsi')),
+                'macd': self._to_float(row.get('macd_line')),
                 'macd_signal': self._to_float(row.get('macd_signal')),
                 'macd_histogram': self._to_float(row.get('macd_histogram')),
-                'bb_upper': self._to_float(row.get('bb_upper')),
-                'bb_middle': self._to_float(row.get('bb_middle')),
-                'bb_lower': self._to_float(row.get('bb_lower')),
+                'bollinger_upper': self._to_float(row.get('bb_upper')),
+                'bollinger_middle': self._to_float(row.get('bb_middle')),
+                'bollinger_lower': self._to_float(row.get('bb_lower')),
                 f'volatility_{self.volatility_period}': self._to_float(row.get(f'volatility_{self.volatility_period}')),
                 'ma_crossover_signal': row.get('ma_crossover_signal')
             }

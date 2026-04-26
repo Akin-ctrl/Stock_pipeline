@@ -7,7 +7,7 @@ Handles all database operations related to daily stock price history.
 from typing import Optional, List, Dict, Any
 from datetime import date, datetime, timedelta
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import and_, desc, func
+from sqlalchemy import and_, desc, func, or_, text
 import pandas as pd
 
 from app.repositories.base import BaseRepository
@@ -31,6 +31,9 @@ class PriceRepository(BaseRepository[FactDailyPrice]):
             session: Active database session
         """
         super().__init__(FactDailyPrice, session)
+
+    TRUSTED_BAR_STATUSES = ("RECONCILED", "OFFICIAL")
+    TRUSTED_QUALITY_FLAGS = ("GOOD", "INCOMPLETE")
     
     def get_latest(self, stock_id: int) -> Optional[FactDailyPrice]:
         """
@@ -48,25 +51,174 @@ class PriceRepository(BaseRepository[FactDailyPrice]):
             .order_by(desc(FactDailyPrice.price_date))
             .first()
         )
+
+    def _apply_trusted_filters(
+        self,
+        query,
+        min_confidence: Optional[float] = 65.0,
+        require_complete: bool = False,
+        require_volume: bool = False,
+    ):
+        """Apply default production trust filters for financially safer reads."""
+        query = query.filter(
+            FactDailyPrice.bar_status.in_(self.TRUSTED_BAR_STATUSES),
+            FactDailyPrice.data_quality_flag.in_(self.TRUSTED_QUALITY_FLAGS),
+        )
+
+        if min_confidence is not None:
+            query = query.filter(
+                or_(
+                    FactDailyPrice.confidence_score.is_(None),
+                    FactDailyPrice.confidence_score >= min_confidence,
+                )
+            )
+
+        if require_complete:
+            query = query.filter(FactDailyPrice.has_complete_data.is_(True))
+
+        if require_volume:
+            query = query.filter(FactDailyPrice.volume.isnot(None))
+
+        return query
     
-    def get_latest_by_code(self, stock_code: str) -> Optional[FactDailyPrice]:
+    def get_latest_by_code(
+        self,
+        stock_code: str,
+        as_of_date: Optional[date] = None
+    ) -> Optional[FactDailyPrice]:
         """
         Get most recent price by stock code.
         
         Args:
             stock_code: Stock ticker
+            as_of_date: Optional date cutoff (price_date <= as_of_date)
             
         Returns:
             Latest price record or None
         """
-        return (
+        query = (
             self.session.query(FactDailyPrice)
             .join(DimStock)
             .filter(DimStock.stock_code == stock_code.upper())
+        )
+
+        if as_of_date:
+            query = query.filter(FactDailyPrice.price_date <= as_of_date)
+
+        return query.order_by(desc(FactDailyPrice.price_date)).first()
+    
+    def get_latest_price(
+        self,
+        stock_id: int,
+        as_of_date: Optional[date] = None
+    ) -> Optional[FactDailyPrice]:
+        """
+        Backward-compatible latest price lookup by stock ID.
+
+        Args:
+            stock_id: Stock identifier
+            as_of_date: Optional date cutoff (price_date <= as_of_date)
+
+        Returns:
+            Latest price record or None
+        """
+        query = (
+            self.session.query(FactDailyPrice)
+            .filter(FactDailyPrice.stock_id == stock_id)
+        )
+
+        if as_of_date:
+            query = query.filter(FactDailyPrice.price_date <= as_of_date)
+
+        return query.order_by(desc(FactDailyPrice.price_date)).first()
+
+    def get_previous_price(
+        self,
+        stock_id: int,
+        before_date: date
+    ) -> Optional[FactDailyPrice]:
+        """Get the latest stored price strictly before a given date."""
+        return (
+            self.session.query(FactDailyPrice)
+            .filter(
+                FactDailyPrice.stock_id == stock_id,
+                FactDailyPrice.price_date < before_date,
+            )
             .order_by(desc(FactDailyPrice.price_date))
             .first()
         )
-    
+
+    def get_first_price_of_year(
+        self,
+        stock_id: int,
+        year: int,
+        through_date: Optional[date] = None,
+    ) -> Optional[FactDailyPrice]:
+        """Get the first stored price in a calendar year for a stock."""
+        start_of_year = date(year, 1, 1)
+        query = (
+            self.session.query(FactDailyPrice)
+            .filter(
+                FactDailyPrice.stock_id == stock_id,
+                FactDailyPrice.price_date >= start_of_year,
+            )
+            .order_by(FactDailyPrice.price_date.asc())
+        )
+
+        if through_date is not None:
+            query = query.filter(FactDailyPrice.price_date <= through_date)
+
+        return query.first()
+
+    def get_latest_trusted_price(
+        self,
+        stock_id: int,
+        as_of_date: Optional[date] = None,
+        min_confidence: Optional[float] = 65.0,
+        require_complete: bool = False,
+    ) -> Optional[FactDailyPrice]:
+        """Get the most recent trusted production price for a stock."""
+        query = (
+            self.session.query(FactDailyPrice)
+            .filter(FactDailyPrice.stock_id == stock_id)
+        )
+
+        if as_of_date:
+            query = query.filter(FactDailyPrice.price_date <= as_of_date)
+
+        query = self._apply_trusted_filters(
+            query,
+            min_confidence=min_confidence,
+            require_complete=require_complete,
+        )
+
+        return query.order_by(desc(FactDailyPrice.price_date)).first()
+
+    def get_latest_trusted_by_code(
+        self,
+        stock_code: str,
+        as_of_date: Optional[date] = None,
+        min_confidence: Optional[float] = 65.0,
+        require_complete: bool = False,
+    ) -> Optional[FactDailyPrice]:
+        """Get the most recent trusted production price by stock code."""
+        query = (
+            self.session.query(FactDailyPrice)
+            .join(DimStock)
+            .filter(DimStock.stock_code == stock_code.upper())
+        )
+
+        if as_of_date:
+            query = query.filter(FactDailyPrice.price_date <= as_of_date)
+
+        query = self._apply_trusted_filters(
+            query,
+            min_confidence=min_confidence,
+            require_complete=require_complete,
+        )
+
+        return query.order_by(desc(FactDailyPrice.price_date)).first()
+
     def get_price_history(
         self,
         stock_id: int,
@@ -102,6 +254,44 @@ class PriceRepository(BaseRepository[FactDailyPrice]):
             query = query.limit(limit)
         
         return query.all()
+
+    def get_trusted_price_history(
+        self,
+        stock_id: int,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        limit: Optional[int] = None,
+        min_confidence: Optional[float] = 65.0,
+        require_complete: bool = False,
+        require_volume: bool = False,
+    ) -> List[FactDailyPrice]:
+        """
+        Get financially safer production price history using trust filters.
+
+        Returns records ordered by date descending, matching `get_price_history`.
+        """
+        query = (
+            self.session.query(FactDailyPrice)
+            .filter(FactDailyPrice.stock_id == stock_id)
+        )
+
+        if start_date:
+            query = query.filter(FactDailyPrice.price_date >= start_date)
+        if end_date:
+            query = query.filter(FactDailyPrice.price_date <= end_date)
+
+        query = self._apply_trusted_filters(
+            query,
+            min_confidence=min_confidence,
+            require_complete=require_complete,
+            require_volume=require_volume,
+        )
+        query = query.order_by(desc(FactDailyPrice.price_date))
+
+        if limit:
+            query = query.limit(limit)
+
+        return query.all()
     
     def get_price_history_df(
         self,
@@ -118,7 +308,7 @@ class PriceRepository(BaseRepository[FactDailyPrice]):
             end_date: End date (inclusive)
             
         Returns:
-            DataFrame with columns: date, open, high, low, close, volume
+            DataFrame with columns: date, close, volume, change_1d_pct
         """
         prices = self.get_price_history(stock_id, start_date, end_date)
         
@@ -127,9 +317,6 @@ class PriceRepository(BaseRepository[FactDailyPrice]):
         
         data = {
             'date': [p.price_date for p in prices],
-            'open': [p.open_price for p in prices],
-            'high': [p.high_price for p in prices],
-            'low': [p.low_price for p in prices],
             'close': [p.close_price for p in prices],
             'volume': [p.volume for p in prices],
             'change_1d_pct': [p.change_1d_pct for p in prices],
@@ -148,7 +335,7 @@ class PriceRepository(BaseRepository[FactDailyPrice]):
         Args:
             price_data: List of dicts with price information
                 Required keys: stock_id, price_date, close_price, source
-                Optional: change_1d_pct, change_ytd_pct, market_cap, etc.
+                Optional: change_1d_pct, change_ytd_pct, etc.
                 
         Returns:
             Number of records inserted/updated
@@ -166,10 +353,14 @@ class PriceRepository(BaseRepository[FactDailyPrice]):
             index_elements=['stock_id', 'price_date'],
             set_={
                 'close_price': stmt.excluded.close_price,
+                'volume': stmt.excluded.volume,
                 'change_1d_pct': stmt.excluded.change_1d_pct,
                 'change_ytd_pct': stmt.excluded.change_ytd_pct,
-                'market_cap': stmt.excluded.market_cap,
                 'source': stmt.excluded.source,
+                'source_count': stmt.excluded.source_count,
+                'bar_status': stmt.excluded.bar_status,
+                'is_official': stmt.excluded.is_official,
+                'confidence_score': stmt.excluded.confidence_score,
                 'data_quality_flag': stmt.excluded.data_quality_flag,
                 'has_complete_data': stmt.excluded.has_complete_data,
             }
@@ -183,6 +374,64 @@ class PriceRepository(BaseRepository[FactDailyPrice]):
         )
         
         return len(price_data)
+
+    def repair_quality_metadata(
+        self,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> int:
+        """
+        Recompute in-place quality fields for existing fact_daily_prices rows.
+
+        This is a safe maintenance operation for rows that were loaded before the
+        corrected completeness logic was introduced.
+        """
+        conditions = []
+        params: Dict[str, Any] = {}
+
+        if start_date is not None:
+            conditions.append("price_date >= :start_date")
+            params["start_date"] = start_date
+
+        if end_date is not None:
+            conditions.append("price_date <= :end_date")
+            params["end_date"] = end_date
+
+        where_clause = ""
+        if conditions:
+            where_clause = "WHERE " + " AND ".join(conditions)
+
+        result = self.session.execute(
+            text(
+                f"""
+                UPDATE fact_daily_prices
+                SET
+                    has_complete_data = (
+                        close_price IS NOT NULL
+                        AND change_1d_pct IS NOT NULL
+                        AND change_ytd_pct IS NOT NULL
+                    ),
+                    data_quality_flag = CASE
+                        WHEN close_price IS NULL THEN 'POOR'
+                        WHEN close_price IS NOT NULL
+                             AND change_1d_pct IS NOT NULL
+                             AND change_ytd_pct IS NOT NULL THEN 'GOOD'
+                        ELSE 'INCOMPLETE'
+                    END,
+                    confidence_score = CASE
+                        WHEN close_price IS NULL THEN 20.00
+                        WHEN close_price IS NOT NULL
+                             AND change_1d_pct IS NOT NULL
+                             AND change_ytd_pct IS NOT NULL THEN 85.00
+                        ELSE 70.00
+                    END
+                {where_clause}
+                """
+            ),
+            params,
+        )
+
+        return result.rowcount or 0
     
     def upsert_price(
         self,
@@ -203,7 +452,7 @@ class PriceRepository(BaseRepository[FactDailyPrice]):
             price_date: Date of price
             close_price: Closing price
             source: Data source name
-            **kwargs: Additional fields (open_price, high_price, etc.)
+            **kwargs: Additional optional fields (volume, change_1d_pct, change_ytd_pct, etc.)
             
         Returns:
             Price record (created or updated)

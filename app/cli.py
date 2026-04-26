@@ -55,23 +55,23 @@ def pipeline():
 
 
 @pipeline.command()
-@click.option('--fetch-ngx/--no-fetch-ngx', default=True, help='Fetch NGX data')
 @click.option('--validate/--no-validate', default=True, help='Validate data quality')
 @click.option('--load-stocks/--no-load-stocks', default=True, help='Load stock master data')
 @click.option('--load-prices/--no-load-prices', default=True, help='Load price data')
 @click.option('--calculate-indicators/--no-calculate-indicators', default=True, help='Calculate indicators')
 @click.option('--evaluate-alerts/--no-evaluate-alerts', default=True, help='Evaluate alerts')
 @click.option('--generate-recommendations/--no-generate-recommendations', default=True, help='Generate recommendations')
+@click.option('--recommendation-profile', type=click.Choice(['steady_20p_10d']), default='steady_20p_10d', show_default=True, help='Recommendation profile for screening horizon')
 @click.option('--batch-size', default=50, type=int, help='Batch processing size')
 @click.option('--lookback-days', default=30, type=int, help='Days of historical data')
 def run(
-    fetch_ngx: bool,
     validate: bool,
     load_stocks: bool,
     load_prices: bool,
     calculate_indicators: bool,
     evaluate_alerts: bool,
     generate_recommendations: bool,
+    recommendation_profile: str,
     batch_size: int,
     lookback_days: int
 ):
@@ -80,13 +80,13 @@ def run(
     click.echo("=" * 80)
     
     config = PipelineConfig(
-        fetch_ngx=fetch_ngx,
         validate_data=validate,
         load_stocks=load_stocks,
         load_prices=load_prices,
         calculate_indicators=calculate_indicators,
         evaluate_alerts=evaluate_alerts,
         generate_recommendations=generate_recommendations,
+        recommendation_profile=recommendation_profile,
         batch_size=batch_size,
         max_errors=10,
         lookback_days=lookback_days

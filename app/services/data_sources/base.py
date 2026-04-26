@@ -5,6 +5,7 @@ Defines the interface that all data sources must implement.
 """
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Optional
 import pandas as pd
 from datetime import date
@@ -29,6 +30,10 @@ class DataSource(ABC):
         """
         self.source_name = source_name
         self.logger = get_logger(f"datasource.{source_name}")
+
+    def get_capabilities(self) -> "SourceCapabilities":
+        """Describe the fields and characteristics this adapter can provide."""
+        return SourceCapabilities(source_name=self.source_name)
     
     @abstractmethod
     def fetch(
@@ -44,20 +49,23 @@ class DataSource(ABC):
             end_date: End date for historical data (optional)
             
         Returns:
-            DataFrame with standardized columns:
-                - stock_code: str - Ticker symbol
-                - company_name: str - Company name
-                - sector: str - Sector name
-                - exchange: str - 'NGX' or 'LSE'
-                - price_date: date - Date of price
-                - close_price: float - Closing price
-                - open_price: float (optional) - Opening price
-                - high_price: float (optional) - High price
-                - low_price: float (optional) - Low price
-                - volume: int (optional) - Trading volume
-                - change_1d_pct: float (optional) - 1-day % change
-                - change_ytd_pct: float (optional) - YTD % change
-                - market_cap: str (optional) - Market cap category
+            DataFrame with standardized columns.
+
+            Required in the current pipeline:
+                - stock_code
+                - company_name
+                - exchange
+                - price_date
+                - close_price
+
+            Common optional fields:
+                - sector
+                - volume
+                - change_1d_pct
+                - change_ytd_pct
+
+            The base interface still allows richer market fields, but the live
+            NGX pipeline currently operates primarily on close-price-centric data.
                 
         Raises:
             DataFetchError: If fetching data fails
@@ -109,3 +117,17 @@ class DataSource(ABC):
                 "date_range": f"{df['price_date'].min()} to {df['price_date'].max()}" if len(df) > 0 else "N/A"
             }
         )
+
+
+@dataclass(frozen=True)
+class SourceCapabilities:
+    """Declared capabilities for a market-data adapter."""
+
+    source_name: str
+    has_current_quotes: bool = True
+    has_historical_eod: bool = False
+    has_volume: bool = False
+    has_change_1d_pct: bool = False
+    has_change_ytd_pct: bool = False
+    has_official_eod: bool = False
+    has_documents: bool = False

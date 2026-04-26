@@ -13,6 +13,8 @@ export PYTHONPATH=/:$PYTHONPATH
 python3 << 'PYEOF'
 import sys
 import time
+import os
+from sqlalchemy import create_engine, text
 
 # Now we can use app. prefix since we're at root
 from app.models import Base, DimSector, AlertRule
@@ -34,9 +36,39 @@ def wait_for_db(max_attempts=30):
             time.sleep(2)
     return False
 
+def ensure_database_exists():
+    """Create the application database if it does not exist."""
+    db_name = os.getenv("POSTGRES_DB")
+    db_user = os.getenv("POSTGRES_USER")
+    db_password = os.getenv("POSTGRES_PASSWORD")
+    db_host = os.getenv("POSTGRES_HOST", "postgres")
+    db_port = os.getenv("POSTGRES_PORT", "5432")
+
+    if not all([db_name, db_user, db_password]):
+        logger.error("Missing database env vars for initialization")
+        sys.exit(1)
+
+    maintenance_url = (
+        f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/postgres"
+    )
+    engine = create_engine(maintenance_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :db"),
+                {"db": db_name}
+            ).scalar()
+            if not exists:
+                logger.info(f"Creating database: {db_name}")
+                conn.execute(text(f"CREATE DATABASE {db_name}"))
+                logger.info("Database created")
+    finally:
+        engine.dispose()
+
 def init_database():
     """Initialize database schema and seed data."""
     try:
+        ensure_database_exists()
         if not wait_for_db():
             logger.error("❌ Database connection failed")
             sys.exit(1)

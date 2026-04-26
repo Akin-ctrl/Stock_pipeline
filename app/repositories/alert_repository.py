@@ -7,7 +7,7 @@ Handles all database operations related to investment alerts and rules.
 from typing import Optional, List, Dict, Any
 from datetime import date, datetime, timedelta
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import and_, desc, func
+from sqlalchemy import and_, desc, func, text
 
 from app.repositories.base import BaseRepository
 from app.models import AlertRule, AlertHistory, DimStock
@@ -166,7 +166,9 @@ class AlertRepository(BaseRepository[AlertHistory]):
         alert_type: str,
         severity: str,
         message: str,
-        trigger_value: Optional[float] = None
+        trigger_value: Optional[float] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **_: Any,
     ) -> AlertHistory:
         """
         Create a new alert record.
@@ -179,17 +181,44 @@ class AlertRepository(BaseRepository[AlertHistory]):
             severity: 'INFO', 'WARNING', or 'CRITICAL'
             message: Alert message
             trigger_value: Value that triggered alert
+            metadata: Optional metadata payload (stored inline in message)
             
         Returns:
             Created alert
         """
+        final_message = message
+        if metadata:
+            metadata_text = ", ".join(
+                f"{key}={value}" for key, value in metadata.items()
+            )
+            final_message = f"{message} | {metadata_text}"
+
+        existing = (
+            self.session.query(AlertHistory)
+            .filter(
+                AlertHistory.stock_id == stock_id,
+                AlertHistory.rule_id == rule_id,
+                AlertHistory.alert_date == alert_date,
+            )
+            .first()
+        )
+
+        if existing:
+            existing.alert_type = alert_type
+            existing.severity = severity
+            existing.message = final_message
+            existing.trigger_value = trigger_value
+            existing.is_resolved = False
+            self.session.flush()
+            return existing
+
         return self.create(
             stock_id=stock_id,
             rule_id=rule_id,
             alert_date=alert_date,
             alert_type=alert_type,
             severity=severity,
-            message=message,
+            message=final_message,
             trigger_value=trigger_value,
             is_resolved=False
         )
@@ -412,6 +441,36 @@ class AlertRepository(BaseRepository[AlertHistory]):
             rule_id=rule_id,
             alert_date=alert_date
         )
+
+    def deduplicate_existing_rows(self) -> int:
+        """
+        Remove duplicate alert rows, keeping the newest row per stock/rule/date.
+
+        Returns:
+            Number of duplicate rows deleted
+        """
+        result = self.session.execute(
+            text(
+                """
+                DELETE FROM alert_history ah
+                USING (
+                    SELECT alert_id
+                    FROM (
+                        SELECT
+                            alert_id,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY stock_id, rule_id, alert_date
+                                ORDER BY alert_timestamp DESC NULLS LAST, alert_id DESC
+                            ) AS rn
+                        FROM alert_history
+                    ) ranked
+                    WHERE ranked.rn > 1
+                ) dupes
+                WHERE ah.alert_id = dupes.alert_id
+                """
+            )
+        )
+        return result.rowcount or 0
     
     def get_alert_summary(self, days: int = 7) -> Dict[str, Any]:
         """
