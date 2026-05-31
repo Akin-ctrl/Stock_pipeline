@@ -52,7 +52,7 @@ The application layer is structured in six explicit layers: configuration, SQLAl
 | Table | Purpose |
 |---|---|
 | `dim_sectors` | Canonical sector master list |
-| `dim_stocks` | Security master — all NGX-tracked stocks with listing/delisting metadata |
+| `dim_stocks` | Security master (all NGX-tracked stocks with listing/delisting metadata) |
 
 ### Staging Tables
 | Table | Purpose |
@@ -106,16 +106,16 @@ All 14 indicators are computed from trusted `fact_daily_prices` rows and stored 
 
 The recommendation engine separates concerns clearly:
 
-- **`action_type`** — long-only user-facing action: `STRONG_BUY`, `BUY`, `HOLD`, `AVOID`, `STRONGLY_AVOID`
-- **`technical_signal_type`** — underlying technical signal: `STRONG_BUY`, `BUY`, `HOLD`, `SELL`, `STRONG_SELL`
-- **`signal_agreement`** — heuristic signal agreement, not predictive probability
-- **`predicted_probability_10d_up`** — model-estimated probability of a positive 10-trading-day move
-- **`heuristic_score`** — composite score across technical, momentum, volatility, trend, and volume sub-scores
-- **`risk_reward_ratio`**, **`policy_target_price`**, **`policy_stop_loss`** — policy-level position parameters
+- **`action_type`**: long-only user-facing action: `STRONG_BUY`, `BUY`, `HOLD`, `AVOID`, `STRONGLY_AVOID`
+- **`technical_signal_type`**: underlying technical signal: `STRONG_BUY`, `BUY`, `HOLD`, `SELL`, `STRONG_SELL`
+- **`signal_agreement`**: heuristic signal agreement, not predictive probability
+- **`predicted_probability_10d_up`**: model-estimated probability of a positive 10-trading-day move
+- **`heuristic_score`**: composite score across technical, momentum, volatility, trend, and volume sub-scores
+- **`risk_reward_ratio`**, **`policy_target_price`**, **`policy_stop_loss`**: policy-level position parameters
 
 An outlier guard excludes model dataset rows and backtest trade windows above 50% absolute return to prevent split-like or bad-data windows from distorting calibration.
 
-Current active profile: `steady_20p_10d` — biased toward stable 10-day momentum with moderate volatility tolerance.
+Current active profile: `steady_20p_10d`: biased toward stable 10-day momentum with moderate volatility tolerance.
 
 ---
 
