@@ -19,6 +19,13 @@ if TYPE_CHECKING:
     from app.services.advisory import StockRecommendation
 
 
+def _decimal_or_none(value) -> Optional[Decimal]:
+    """Convert numeric-like values to Decimal while preserving nulls."""
+    if value is None:
+        return None
+    return Decimal(str(value))
+
+
 class RecommendationRepository(BaseRepository[FactRecommendation]):
     """
     Repository for managing stock recommendations.
@@ -44,47 +51,13 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         Returns:
             Created FactRecommendation instance
         """
-        # Build recommendation reason from reasons list
-        reason_text = " | ".join(recommendation.reasons[:3])  # Top 3 reasons
-        
-        # Calculate potential return
-        potential_return = None
-        if recommendation.target_price and recommendation.current_price:
-            potential_return = (
-                (recommendation.target_price - recommendation.current_price) 
-                / recommendation.current_price
-            ) * 100
-        
         self._delete_existing_rows(
             recommendation_date=recommendation.recommendation_date,
             stock_ids=[recommendation.stock_id],
+            profile=getattr(recommendation, "strategy_profile", "steady_20p_10d"),
         )
 
-        fact_rec = FactRecommendation(
-            stock_id=recommendation.stock_id,
-            recommendation_date=recommendation.recommendation_date,
-            signal_type=recommendation.signal_type.value,
-            confidence_score=Decimal(str(recommendation.confidence * 100)),
-            overall_score=Decimal(str(recommendation.score)),
-            score_category=recommendation.score_category.value,
-            current_price=recommendation.current_price,
-            target_price=recommendation.target_price,
-            stop_loss=recommendation.stop_loss,
-            potential_return_pct=Decimal(str(potential_return)) if potential_return else None,
-            risk_level=recommendation.risk_level,
-            recommendation_reason=reason_text,
-            technical_score=Decimal(str(recommendation.stock_score.technical_score)),
-            momentum_score=Decimal(str(recommendation.stock_score.momentum_score)),
-            volatility_score=Decimal(str(recommendation.stock_score.volatility_score)),
-            trend_score=Decimal(str(recommendation.stock_score.trend_score)),
-            volume_score=Decimal(str(recommendation.stock_score.volume_score)),
-            rsi_value=Decimal(str(recommendation.indicators.get('rsi_14'))) 
-                if 'rsi_14' in recommendation.indicators else None,
-            macd_value=Decimal(str(recommendation.indicators.get('macd')))
-                if 'macd' in recommendation.indicators else None,
-            is_active=True
-        )
-        
+        fact_rec = self._build_fact_recommendation(recommendation)
         self.session.add(fact_rec)
         self.session.flush()
         self.session.refresh(fact_rec)
@@ -95,6 +68,7 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         self,
         recommendation_date: date,
         stock_ids: List[int],
+        profile: str = "steady_20p_10d",
     ) -> int:
         """Remove existing rows for the same stock/date pair before reinserting."""
         if not stock_ids:
@@ -105,6 +79,7 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
             .filter(
                 FactRecommendation.recommendation_date == recommendation_date,
                 FactRecommendation.stock_id.in_(stock_ids),
+                FactRecommendation.profile == profile,
             )
             .delete(synchronize_session=False)
         )
@@ -132,55 +107,80 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
 
         recommendations = list(deduped.values())
 
-        recs_by_date: dict[date, List["StockRecommendation"]] = {}
+        recs_by_date_profile: dict[tuple[date, str], List["StockRecommendation"]] = {}
         for rec in recommendations:
-            recs_by_date.setdefault(rec.recommendation_date, []).append(rec)
+            profile = getattr(rec, "strategy_profile", "steady_20p_10d")
+            recs_by_date_profile.setdefault((rec.recommendation_date, profile), []).append(rec)
 
-        for recommendation_date, recs in recs_by_date.items():
+        for (recommendation_date, profile), recs in recs_by_date_profile.items():
             self._delete_existing_rows(
                 recommendation_date=recommendation_date,
                 stock_ids=[rec.stock_id for rec in recs],
+                profile=profile,
             )
 
         count = 0
         for rec in recommendations:
-            reason_text = " | ".join(rec.reasons[:3])
-
-            potential_return = None
-            if rec.target_price and rec.current_price:
-                potential_return = (
-                    (rec.target_price - rec.current_price) / rec.current_price
-                ) * 100
-
-            fact_rec = FactRecommendation(
-                stock_id=rec.stock_id,
-                recommendation_date=rec.recommendation_date,
-                signal_type=rec.signal_type.value,
-                confidence_score=Decimal(str(rec.confidence * 100)),
-                overall_score=Decimal(str(rec.score)),
-                score_category=rec.score_category.value,
-                current_price=rec.current_price,
-                target_price=rec.target_price,
-                stop_loss=rec.stop_loss,
-                potential_return_pct=Decimal(str(potential_return)) if potential_return is not None else None,
-                risk_level=rec.risk_level,
-                recommendation_reason=reason_text,
-                technical_score=Decimal(str(rec.stock_score.technical_score)),
-                momentum_score=Decimal(str(rec.stock_score.momentum_score)),
-                volatility_score=Decimal(str(rec.stock_score.volatility_score)),
-                trend_score=Decimal(str(rec.stock_score.trend_score)),
-                volume_score=Decimal(str(rec.stock_score.volume_score)),
-                rsi_value=Decimal(str(rec.indicators.get('rsi_14')))
-                if 'rsi_14' in rec.indicators else None,
-                macd_value=Decimal(str(rec.indicators.get('macd')))
-                if 'macd' in rec.indicators else None,
-                is_active=True,
-            )
-            self.session.add(fact_rec)
+            self.session.add(self._build_fact_recommendation(rec))
             count += 1
 
         self.session.flush()
         return count
+
+    def _build_fact_recommendation(
+        self,
+        rec: "StockRecommendation",
+    ) -> FactRecommendation:
+        """Map the revamped advisory object to the model-aligned fact table."""
+        policy_upside_pct = None
+        policy_downside_pct = None
+        risk_reward_ratio = None
+
+        if rec.policy_target_price is not None and rec.current_price:
+            policy_upside_pct = (
+                (rec.policy_target_price - rec.current_price) / rec.current_price
+            ) * 100
+
+        if rec.policy_stop_loss is not None and rec.current_price:
+            policy_downside_pct = (
+                (rec.current_price - rec.policy_stop_loss) / rec.current_price
+            ) * 100
+
+        if policy_upside_pct is not None and policy_downside_pct not in (None, 0):
+            risk_reward_ratio = policy_upside_pct / policy_downside_pct
+
+        return FactRecommendation(
+            stock_id=rec.stock_id,
+            recommendation_date=rec.recommendation_date,
+            profile=getattr(rec, "strategy_profile", "steady_20p_10d"),
+            action_type=rec.action_type.value,
+            technical_signal_type=rec.signal_type.value,
+            signal_agreement=Decimal(str(rec.signal_agreement)),
+            predicted_probability_10d_up=_decimal_or_none(
+                rec.predicted_probability_10d_up
+            ),
+            heuristic_score=Decimal(str(rec.heuristic_score)),
+            heuristic_score_category=rec.heuristic_score_category.value,
+            current_price=rec.current_price,
+            policy_target_price=rec.policy_target_price,
+            policy_stop_loss=rec.policy_stop_loss,
+            policy_upside_pct=_decimal_or_none(policy_upside_pct),
+            policy_downside_pct=_decimal_or_none(policy_downside_pct),
+            risk_reward_ratio=_decimal_or_none(risk_reward_ratio),
+            heuristic_risk_level=rec.heuristic_risk_level,
+            reasons=rec.reasons,
+            technical_score=Decimal(str(rec.stock_score.technical_score)),
+            momentum_score=Decimal(str(rec.stock_score.momentum_score)),
+            volatility_score=Decimal(str(rec.stock_score.volatility_score)),
+            trend_score=Decimal(str(rec.stock_score.trend_score)),
+            volume_score=Decimal(str(rec.stock_score.volume_score)),
+            rsi_14=_decimal_or_none(rec.indicators.get('rsi_14')),
+            macd=_decimal_or_none(rec.indicators.get('macd')),
+            model_version="historical_logistic_v1"
+            if rec.predicted_probability_10d_up is not None
+            else None,
+            is_active=True,
+        )
     
     def get_recommendations_by_date(
         self,
@@ -204,7 +204,7 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         if include_stock:
             query = query.options(joinedload(FactRecommendation.stock))
         
-        return query.order_by(desc(FactRecommendation.overall_score)).all()
+        return query.order_by(desc(FactRecommendation.heuristic_score)).all()
     
     def get_recommendations_by_date_range(
         self,
@@ -231,13 +231,13 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         )
         
         if signal_type:
-            query = query.filter(FactRecommendation.signal_type == signal_type)
+            query = query.filter(FactRecommendation.action_type == signal_type)
         
         return query.options(
             joinedload(FactRecommendation.stock)
         ).order_by(
             desc(FactRecommendation.recommendation_date),
-            desc(FactRecommendation.overall_score)
+            desc(FactRecommendation.heuristic_score)
         ).all()
     
     def get_recommendations_by_stock(
@@ -279,12 +279,12 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         )
         
         if signal_type:
-            query = query.filter(FactRecommendation.signal_type == signal_type)
+            query = query.filter(FactRecommendation.action_type == signal_type)
         
         return query.options(
             joinedload(FactRecommendation.stock)
         ).order_by(
-            desc(FactRecommendation.overall_score)
+            desc(FactRecommendation.heuristic_score)
         ).all()
     
     def get_top_picks(
@@ -307,15 +307,16 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         return self.session.query(FactRecommendation).filter(
             and_(
                 FactRecommendation.recommendation_date == recommendation_date,
-                FactRecommendation.signal_type.in_(['BUY', 'STRONG_BUY'])
+                FactRecommendation.action_type.in_(['BUY', 'STRONG_BUY'])
                     if signal_type == 'BUY'
-                    else FactRecommendation.signal_type == signal_type
+                    else FactRecommendation.action_type == signal_type
             )
         ).options(
             joinedload(FactRecommendation.stock)
         ).order_by(
-            desc(FactRecommendation.overall_score),
-            desc(FactRecommendation.confidence_score)
+            desc(FactRecommendation.predicted_probability_10d_up),
+            desc(FactRecommendation.heuristic_score),
+            desc(FactRecommendation.signal_agreement)
         ).limit(top_n).all()
     
     def update_recommendation_outcome(
@@ -455,7 +456,7 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
                         SELECT
                             recommendation_id,
                             ROW_NUMBER() OVER (
-                                PARTITION BY stock_id, recommendation_date
+                                PARTITION BY stock_id, recommendation_date, profile
                                 ORDER BY recommendation_id DESC
                             ) AS rn
                         FROM fact_recommendations

@@ -14,10 +14,24 @@ from typing import List, Optional, Dict
 from decimal import Decimal
 from enum import Enum
 
+from app.services.advisory.eligibility import (
+    EligibilityConfig,
+    RecommendationEligibilityEvaluator,
+)
+from app.services.advisory.selection import (
+    RecommendationSelectionEvaluator,
+    SelectionConfig,
+)
 from app.services.advisory.signals import (
     SignalGenerator, SignalType, TechnicalSignal
 )
+from app.services.advisory.policy import RecommendationPolicyEngine
 from app.services.advisory.scoring import StockScorer, StockScore, ScoreCategory
+from app.services.modeling.feature_engineering import build_historical_feature_snapshot
+from app.services.modeling import (
+    HistoricalLogisticProbabilityEstimator,
+    NullProbabilityEstimator,
+)
 from app.repositories import IndicatorRepository, PriceRepository, StockRepository
 from app.utils import get_logger
 
@@ -27,63 +41,95 @@ class RecommendationProfile(Enum):
     STEADY_20P_10D = "steady_20p_10d"
 
 
+class RecommendationAction(Enum):
+    """Long-only recommendation actions shown to users and downstream tools."""
+
+    STRONG_BUY = "STRONG_BUY"
+    BUY = "BUY"
+    HOLD = "HOLD"
+    AVOID = "AVOID"
+    STRONGLY_AVOID = "STRONGLY_AVOID"
+
+
 @dataclass(frozen=True)
-class RecommendationProfileConfig:
-    """Configuration bundle for profile-specific scoring and signal thresholds."""
+class SignalConfig:
+    """Configuration for heuristic technical-signal generation."""
+
+    rsi_oversold: float
+    rsi_overbought: float
+    rsi_strong_oversold: float
+    rsi_strong_overbought: float
+
+
+@dataclass(frozen=True)
+class ScoringConfig:
+    """Configuration for heuristic score weighting."""
+
     technical_weight: float
     momentum_weight: float
     volatility_weight: float
     trend_weight: float
     volume_weight: float
-    rsi_oversold: float
-    rsi_overbought: float
-    rsi_strong_oversold: float
-    rsi_strong_overbought: float
-    min_score: float
-    min_confidence: float
+
+
+@dataclass(frozen=True)
+class PolicyConfig:
+    """Configuration for strategy-policy target and stop outputs."""
+
     target_upside_buy: float
     target_upside_strong: float
     stop_loss_buy: float
     stop_loss_strong: float
-    min_price: float
-    max_volatility: float
-    min_volume_ratio: float
-    rsi_min: float
-    rsi_max: float
-    buy_only: bool
-    min_trusted_history_days: int
-    min_price_confidence_score: float
-    require_complete_data: bool
-    require_official: bool
+
+
+@dataclass(frozen=True)
+class RecommendationProfileConfig:
+    """Composition root for prediction-adjacent advisory configuration layers."""
+
+    signal_config: SignalConfig
+    scoring_config: ScoringConfig
+    eligibility_config: EligibilityConfig
+    selection_config: SelectionConfig
+    policy_config: PolicyConfig
 
 
 PROFILE_CONFIGS: Dict[RecommendationProfile, RecommendationProfileConfig] = {
     RecommendationProfile.STEADY_20P_10D: RecommendationProfileConfig(
-        technical_weight=0.25,
-        momentum_weight=0.32,
-        volatility_weight=0.23,
-        trend_weight=0.15,
-        volume_weight=0.05,
-        rsi_oversold=35.0,
-        rsi_overbought=72.0,
-        rsi_strong_oversold=25.0,
-        rsi_strong_overbought=80.0,
-        min_score=55.0,
-        min_confidence=0.60,
-        target_upside_buy=1.20,
-        target_upside_strong=1.25,
-        stop_loss_buy=0.94,
-        stop_loss_strong=0.92,
-        min_price=1.0,
-        max_volatility=0.75,
-        min_volume_ratio=0.8,
-        rsi_min=40.0,
-        rsi_max=75.0,
-        buy_only=True,
-        min_trusted_history_days=30,
-        min_price_confidence_score=60.0,
-        require_complete_data=True,
-        require_official=False,
+        signal_config=SignalConfig(
+            rsi_oversold=35.0,
+            rsi_overbought=72.0,
+            rsi_strong_oversold=25.0,
+            rsi_strong_overbought=80.0,
+        ),
+        scoring_config=ScoringConfig(
+            technical_weight=0.25,
+            momentum_weight=0.32,
+            volatility_weight=0.23,
+            trend_weight=0.15,
+            volume_weight=0.05,
+        ),
+        eligibility_config=EligibilityConfig(
+            min_price=1.0,
+            max_volatility=0.75,
+            min_volume_ratio=0.8,
+            rsi_min=40.0,
+            rsi_max=75.0,
+            min_trusted_history_days=30,
+            min_price_confidence_score=60.0,
+            require_complete_data=True,
+            require_official=False,
+        ),
+        selection_config=SelectionConfig(
+            min_heuristic_score=55.0,
+            min_signal_agreement=0.60,
+            buy_only=True,
+        ),
+        policy_config=PolicyConfig(
+            target_upside_buy=1.20,
+            target_upside_strong=1.25,
+            stop_loss_buy=0.94,
+            stop_loss_strong=0.92,
+        ),
     ),
 }
 
@@ -99,13 +145,18 @@ class StockRecommendation:
         stock_name: Stock company name
         recommendation_date: Date of recommendation
         signal_type: Trading signal (BUY/SELL/HOLD)
-        confidence: Signal confidence (0-1)
-        score: Overall stock score (0-100)
-        score_category: Score category
+        action_type: Long-only recommendation action
+        signal_agreement: Heuristic signal-agreement score (0-1)
+        predicted_probability_10d_up: Optional model probability for target_up_10d
+        heuristic_score: Heuristic technical score (0-100)
+        heuristic_score_category: Heuristic score category
+        policy_target_price: Strategy-policy target price
+        policy_stop_loss: Strategy-policy stop price
+        heuristic_risk_level: Heuristic risk label
         current_price: Current stock price
-        target_price: Estimated target price
-        stop_loss: Recommended stop-loss price
-        risk_level: Risk assessment (LOW/MEDIUM/HIGH)
+        target_price: Backward-compatible alias for the policy target price
+        stop_loss: Backward-compatible alias for the policy stop price
+        risk_level: Backward-compatible alias for the heuristic risk label
         reasons: List of recommendation reasons
         indicators: Dict of indicator values
         technical_signal: Full TechnicalSignal object
@@ -116,17 +167,58 @@ class StockRecommendation:
     stock_name: str
     recommendation_date: date
     signal_type: SignalType
-    confidence: float
-    score: float
-    score_category: ScoreCategory
+    action_type: RecommendationAction
+    signal_agreement: float
+    predicted_probability_10d_up: Optional[float]
+    heuristic_score: float
+    heuristic_score_category: ScoreCategory
+    policy_target_price: Optional[Decimal]
+    policy_stop_loss: Optional[Decimal]
+    heuristic_risk_level: str
     current_price: Decimal
-    target_price: Optional[Decimal]
-    stop_loss: Optional[Decimal]
-    risk_level: str
     reasons: List[str]
     indicators: Dict[str, float]
     technical_signal: TechnicalSignal
     stock_score: StockScore
+    strategy_profile: str = RecommendationProfile.STEADY_20P_10D.value
+
+    @property
+    def confidence(self) -> float:
+        """Backward-compatible alias for legacy heuristic confidence access."""
+        return self.signal_agreement
+
+    @property
+    def score(self) -> float:
+        """Backward-compatible alias for the heuristic score."""
+        return self.heuristic_score
+
+    @property
+    def score_category(self) -> ScoreCategory:
+        """Backward-compatible alias for the heuristic score category."""
+        return self.heuristic_score_category
+
+    @property
+    def target_price(self) -> Optional[Decimal]:
+        """Backward-compatible alias for the strategy-policy target price."""
+        return self.policy_target_price
+
+    @property
+    def stop_loss(self) -> Optional[Decimal]:
+        """Backward-compatible alias for the strategy-policy stop price."""
+        return self.policy_stop_loss
+
+    @property
+    def risk_level(self) -> str:
+        """Backward-compatible alias for the heuristic risk label."""
+        return self.heuristic_risk_level
+
+    @property
+    def is_actionable(self) -> bool:
+        """Return True when the recommendation represents a long entry action."""
+        return self.action_type in {
+            RecommendationAction.BUY,
+            RecommendationAction.STRONG_BUY,
+        }
 
 
 class StockScreener:
@@ -139,7 +231,12 @@ class StockScreener:
     **NOT INVESTMENT ADVICE** - For screening and analysis only.
     """
     
-    def __init__(self, db_session, strategy_profile: str = RecommendationProfile.STEADY_20P_10D.value):
+    def __init__(
+        self,
+        db_session,
+        strategy_profile: str = RecommendationProfile.STEADY_20P_10D.value,
+        probability_estimator=None,
+    ):
         """
         Initialize advisor.
         
@@ -154,6 +251,18 @@ class StockScreener:
         self.signal_generator = SignalGenerator()
         self.stock_scorer = StockScorer()
         self._apply_profile(self.strategy_profile)
+        self.probability_estimator = (
+            probability_estimator
+            if probability_estimator is not None
+            else HistoricalLogisticProbabilityEstimator(db_session)
+        )
+        self.policy_engine = RecommendationPolicyEngine(self.profile_config.policy_config)
+        self.eligibility_evaluator = RecommendationEligibilityEvaluator(
+            self.profile_config.eligibility_config
+        )
+        self.selection_evaluator = RecommendationSelectionEvaluator(
+            self.profile_config.selection_config
+        )
         
         self.stock_repo = StockRepository(db_session)
         self.price_repo = PriceRepository(db_session)
@@ -176,18 +285,27 @@ class StockScreener:
         self.profile_config = PROFILE_CONFIGS[profile]
 
         cfg = self.profile_config
+        signal_cfg = cfg.signal_config
+        scoring_cfg = cfg.scoring_config
         self.signal_generator = SignalGenerator(
-            rsi_oversold=cfg.rsi_oversold,
-            rsi_overbought=cfg.rsi_overbought,
-            rsi_strong_oversold=cfg.rsi_strong_oversold,
-            rsi_strong_overbought=cfg.rsi_strong_overbought,
+            rsi_oversold=signal_cfg.rsi_oversold,
+            rsi_overbought=signal_cfg.rsi_overbought,
+            rsi_strong_oversold=signal_cfg.rsi_strong_oversold,
+            rsi_strong_overbought=signal_cfg.rsi_strong_overbought,
         )
         self.stock_scorer = StockScorer(
-            technical_weight=cfg.technical_weight,
-            momentum_weight=cfg.momentum_weight,
-            volatility_weight=cfg.volatility_weight,
-            trend_weight=cfg.trend_weight,
-            volume_weight=cfg.volume_weight,
+            technical_weight=scoring_cfg.technical_weight,
+            momentum_weight=scoring_cfg.momentum_weight,
+            volatility_weight=scoring_cfg.volatility_weight,
+            trend_weight=scoring_cfg.trend_weight,
+            volume_weight=scoring_cfg.volume_weight,
+        )
+        self.policy_engine = RecommendationPolicyEngine(cfg.policy_config)
+        self.eligibility_evaluator = RecommendationEligibilityEvaluator(
+            cfg.eligibility_config
+        )
+        self.selection_evaluator = RecommendationSelectionEvaluator(
+            cfg.selection_config
         )
     
     def generate_recommendations(
@@ -196,6 +314,8 @@ class StockScreener:
         stock_codes: Optional[List[str]] = None,
         min_score: Optional[float] = None,
         min_confidence: Optional[float] = None,
+        min_signal_agreement: Optional[float] = None,
+        min_predicted_probability: Optional[float] = None,
         strategy_profile: Optional[str] = None,
     ) -> List[StockRecommendation]:
         """
@@ -204,8 +324,10 @@ class StockScreener:
         Args:
             recommendation_date: Date to generate recommendations for
             stock_codes: Specific stocks to analyze (None = all active)
-            min_score: Minimum score threshold (defaults to profile)
-            min_confidence: Minimum confidence threshold (defaults to profile)
+            min_score: Legacy alias for minimum heuristic score threshold
+            min_confidence: Legacy alias for minimum signal-agreement threshold
+            min_signal_agreement: Minimum heuristic signal-agreement threshold
+            min_predicted_probability: Minimum predicted 10-day up probability
             strategy_profile: steady_20p_10d
             
         Returns:
@@ -218,12 +340,18 @@ class StockScreener:
             self._apply_profile(self._parse_profile(strategy_profile))
 
         effective_min_score = (
-            self.profile_config.min_score if min_score is None else min_score
+            self.profile_config.selection_config.min_heuristic_score
+            if min_score is None
+            else min_score
         )
-        effective_min_confidence = (
-            self.profile_config.min_confidence
-            if min_confidence is None
-            else min_confidence
+        effective_min_signal_agreement = (
+            self.profile_config.selection_config.min_signal_agreement
+            if min_signal_agreement is None and min_confidence is None
+            else (
+                min_signal_agreement
+                if min_signal_agreement is not None
+                else min_confidence
+            )
         )
         
         self.logger.info(
@@ -231,8 +359,9 @@ class StockScreener:
             extra={
                 "date": str(recommendation_date),
                 "profile": self.strategy_profile.value,
-                "min_score": effective_min_score,
-                "min_confidence": effective_min_confidence,
+                "min_heuristic_score": effective_min_score,
+                "min_signal_agreement": effective_min_signal_agreement,
+                "min_predicted_probability": min_predicted_probability,
             }
         )
         
@@ -251,7 +380,8 @@ class StockScreener:
                     stock,
                     recommendation_date,
                     effective_min_score,
-                    effective_min_confidence,
+                    effective_min_signal_agreement,
+                    min_predicted_probability,
                 )
                 
                 if recommendation:
@@ -262,8 +392,8 @@ class StockScreener:
                     f"Failed to analyze {stock.stock_code}: {str(e)}"
                 )
         
-        # Sort by score (descending)
-        recommendations.sort(key=lambda x: x.score, reverse=True)
+        # Prefer probability-aware ranking when a model prediction is available.
+        recommendations.sort(key=self._recommendation_rank_key, reverse=True)
         
         self.logger.info(
             f"Generated {len(recommendations)} recommendations",
@@ -280,7 +410,8 @@ class StockScreener:
         stock,
         recommendation_date: date,
         min_score: float,
-        min_confidence: float
+        min_signal_agreement: float,
+        min_predicted_probability: Optional[float],
     ) -> Optional[StockRecommendation]:
         """Analyze individual stock and generate recommendation."""
         
@@ -326,6 +457,7 @@ class StockScreener:
         
         # Generate signal
         signal = self.signal_generator.generate_signal(indicators)
+        action_type = self._map_signal_to_action(signal.signal_type)
 
         # Calculate score
         score = self.stock_scorer.calculate_score(
@@ -333,61 +465,50 @@ class StockScreener:
             price_history=trusted_price_history,
         )
 
-        # Profile guardrails for steady investing
-        cfg = self.profile_config
-        if cfg.buy_only and signal.signal_type in [SignalType.SELL, SignalType.STRONG_SELL]:
-            return None
-
-        if indicators.get('current_price') is not None and indicators['current_price'] < cfg.min_price:
-            return None
-
-        if indicators.get('volatility') is not None and indicators['volatility'] > cfg.max_volatility:
-            return None
-
-        if indicators.get('volume_ratio') is not None and indicators['volume_ratio'] < cfg.min_volume_ratio:
-            return None
-
-        if indicators.get('trusted_history_days') is not None and indicators['trusted_history_days'] < cfg.min_trusted_history_days:
-            return None
-
-        if (
-            indicators.get('price_confidence_score') is not None
-            and indicators['price_confidence_score'] < cfg.min_price_confidence_score
-        ):
-            return None
-
-        if cfg.require_complete_data and not indicators.get('has_complete_data', False):
-            return None
-
-        if cfg.require_official and not indicators.get('is_official', False):
-            return None
-
-        rsi_val = indicators.get('rsi_14')
-        if rsi_val is not None and (rsi_val < cfg.rsi_min or rsi_val > cfg.rsi_max):
-            return None
-
-        # Filter by thresholds
-        if score.total_score < min_score:
-            self.logger.debug(
-                f"{stock.stock_code} score {score.total_score:.1f} below threshold {min_score}"
-            )
-            return None
-        
-        if signal.confidence < min_confidence:
-            self.logger.debug(
-                f"{stock.stock_code} confidence {signal.confidence:.2f} below threshold {min_confidence}"
-            )
-            return None
-        
-        # Calculate target price and stop loss
-        target_price, stop_loss = self._calculate_price_targets(
-            float(latest_price.close_price),
-            signal.signal_type,
-            indicators
+        predicted_probability_10d_up = self.probability_estimator.estimate_probability_10d_up(
+            {
+                "stock_id": stock.stock_id,
+                "stock_code": stock.stock_code,
+                "recommendation_date": recommendation_date,
+                "signal_type": signal.signal_type.value,
+                "signal_agreement": signal.signal_agreement,
+                "heuristic_score": score.total_score,
+                "heuristic_score_category": score.category.value,
+                "indicators": indicators,
+            }
         )
-        
-        # Assess risk
-        risk_level = self._assess_risk(indicators, signal, score)
+
+        eligibility_decision = self.eligibility_evaluator.evaluate(indicators)
+        if not eligibility_decision.eligible:
+            self.logger.debug(
+                f"{stock.stock_code} failed eligibility: "
+                f"{eligibility_decision.rejection_reason}"
+            )
+            return None
+
+        selection_decision = self.selection_evaluator.evaluate(
+            action_value=action_type.value,
+            heuristic_score=score.total_score,
+            signal_agreement=signal.signal_agreement,
+            predicted_probability_10d_up=predicted_probability_10d_up,
+            min_heuristic_score=min_score,
+            min_signal_agreement=min_signal_agreement,
+            min_predicted_probability=min_predicted_probability,
+        )
+        if not selection_decision.selected:
+            self.logger.debug(
+                f"{stock.stock_code} failed selection: "
+                f"{selection_decision.rejection_reason}"
+            )
+            return None
+
+        policy_output = self.policy_engine.build_policy_output(
+            current_price=float(latest_price.close_price),
+            action_value=action_type.value,
+            indicators=indicators,
+            signal_agreement=signal.signal_agreement,
+            heuristic_score=score.total_score,
+        )
         
         # Build combined reasons
         reasons = self._build_reasons(signal, score, indicators)
@@ -398,17 +519,28 @@ class StockScreener:
             stock_name=stock.company_name,
             recommendation_date=recommendation_date,
             signal_type=signal.signal_type,
-            confidence=signal.confidence,
-            score=score.total_score,
-            score_category=score.category,
+            action_type=action_type,
+            signal_agreement=signal.signal_agreement,
+            predicted_probability_10d_up=predicted_probability_10d_up,
+            heuristic_score=score.total_score,
+            heuristic_score_category=score.category,
+            policy_target_price=(
+                Decimal(str(policy_output.policy_target_price))
+                if policy_output.policy_target_price is not None
+                else None
+            ),
+            policy_stop_loss=(
+                Decimal(str(policy_output.policy_stop_loss))
+                if policy_output.policy_stop_loss is not None
+                else None
+            ),
+            heuristic_risk_level=policy_output.heuristic_risk_level,
             current_price=latest_price.close_price,
-            target_price=Decimal(str(target_price)) if target_price else None,
-            stop_loss=Decimal(str(stop_loss)) if stop_loss else None,
-            risk_level=risk_level,
             reasons=reasons,
             indicators=indicators,
             technical_signal=signal,
-            stock_score=score
+            stock_score=score,
+            strategy_profile=self.strategy_profile.value,
         )
     
     def _build_indicators_dict(
@@ -475,129 +607,42 @@ class StockScreener:
 
         if recent_prices:
             latest_record = recent_prices[0]
-            recent_volume_window = recent_prices[:21]
-            historical_volumes = [
-                p.volume for p in recent_volume_window[1:]
-                if p.volume is not None
-            ]
-            if latest_record.volume is not None and historical_volumes:
-                avg_volume = sum(historical_volumes) / len(historical_volumes)
-                if avg_volume > 0:
-                    indicators['volume_ratio'] = float(latest_record.volume / avg_volume)
+            chronological_prices = list(reversed(recent_prices))
+            engineered_features = build_historical_feature_snapshot(
+                history_through_anchor=chronological_prices,
+                current_price=latest_record.close_price,
+                ma_7=indicators.get('ma_7'),
+                ma_30=indicators.get('ma_30'),
+                ma_90=indicators.get('ma_90'),
+            )
 
-            if latest_record.change_1d_pct is not None:
-                indicators['price_change_pct'] = float(latest_record.change_1d_pct)
-            elif len(recent_prices) > 1:
-                previous_close = recent_prices[1].close_price
-                if previous_close is not None and float(previous_close) > 0:
-                    indicators['price_change_pct'] = (
-                        (float(latest_record.close_price) - float(previous_close))
-                        / float(previous_close)
-                    ) * 100
+            indicators['volume_ratio'] = (
+                engineered_features.volume_ratio
+                if engineered_features.volume_ratio is not None
+                else indicators['volume_ratio']
+            )
+            indicators['price_change_pct'] = engineered_features.price_change_pct
+            indicators['price_change_3d'] = engineered_features.price_change_3d
+            indicators['price_change_5d'] = engineered_features.price_change_5d
+            indicators['price_change_10d'] = engineered_features.price_change_10d
+            indicators['price_change_20d'] = engineered_features.price_change_20d
+            indicators['price_change_30d'] = engineered_features.price_change_30d
+            indicators['price_change_60d'] = engineered_features.price_change_60d
+            indicators['close_vs_20d_high_pct'] = engineered_features.close_vs_20d_high_pct
+            indicators['close_vs_60d_high_pct'] = engineered_features.close_vs_60d_high_pct
+            indicators['close_vs_20d_low_pct'] = engineered_features.close_vs_20d_low_pct
+            indicators['close_vs_60d_low_pct'] = engineered_features.close_vs_60d_low_pct
+            indicators['drawdown_20d_pct'] = engineered_features.drawdown_20d_pct
+            indicators['drawdown_60d_pct'] = engineered_features.drawdown_60d_pct
+            indicators['rebound_20d_pct'] = engineered_features.rebound_20d_pct
+            indicators['rebound_60d_pct'] = engineered_features.rebound_60d_pct
+            indicators['volatility_10d'] = engineered_features.volatility_10d
+            indicators['volatility_20d'] = engineered_features.volatility_20d
+            indicators['downside_volatility_20d'] = engineered_features.downside_volatility_20d
+            indicators['average_volume_20d'] = engineered_features.average_volume_20d
+            indicators['volume_trend_ratio'] = engineered_features.volume_trend_ratio
 
-            if len(recent_prices) > 10:
-                close_10d = recent_prices[10].close_price
-                if close_10d is not None and float(close_10d) > 0:
-                    indicators['price_change_10d'] = (
-                        (float(latest_record.close_price) - float(close_10d))
-                        / float(close_10d)
-                    ) * 100
-
-            if len(recent_prices) > 20:
-                close_20d = recent_prices[20].close_price
-                if close_20d is not None and float(close_20d) > 0:
-                    indicators['price_change_20d'] = (
-                        (float(latest_record.close_price) - float(close_20d))
-                        / float(close_20d)
-                    ) * 100
-        
         return indicators, recent_prices
-    
-    def _calculate_price_targets(
-        self,
-        current_price: float,
-        signal_type: SignalType,
-        indicators: Dict[str, float]
-    ) -> tuple[Optional[float], Optional[float]]:
-        """
-        Calculate target price and stop loss.
-        
-        Returns:
-            Tuple of (target_price, stop_loss)
-        """
-        cfg = self.profile_config
-        if signal_type in [SignalType.BUY, SignalType.STRONG_BUY]:
-            target_multiplier = (
-                cfg.target_upside_strong
-                if signal_type == SignalType.STRONG_BUY
-                else cfg.target_upside_buy
-            )
-            target_price = current_price * target_multiplier
-
-            stop_loss_multiplier = (
-                cfg.stop_loss_strong
-                if signal_type == SignalType.STRONG_BUY
-                else cfg.stop_loss_buy
-            )
-            stop_loss = current_price * stop_loss_multiplier
-            
-            return target_price, stop_loss
-            
-        elif signal_type in [SignalType.SELL, SignalType.STRONG_SELL]:
-            # For sell signals, target is lower price
-            target_multiplier = 0.85 if signal_type == SignalType.STRONG_SELL else 0.90
-            target_price = current_price * target_multiplier
-            
-            # Stop loss: price increase (exit short position)
-            stop_loss_multiplier = 1.05 if signal_type == SignalType.STRONG_SELL else 1.03
-            stop_loss = current_price * stop_loss_multiplier
-            
-            return target_price, stop_loss
-        
-        return None, None
-    
-    def _assess_risk(
-        self,
-        indicators: Dict[str, float],
-        signal: TechnicalSignal,
-        score: StockScore
-    ) -> str:
-        """
-        Assess investment risk level.
-        
-        Returns:
-            Risk level: LOW, MEDIUM, or HIGH
-        """
-        risk_factors = []
-        
-        # Volatility risk
-        # Volatility is stored as annualized decimal (for example 0.30 = 30%)
-        volatility = indicators.get('volatility', 0.30)
-        if volatility > 0.50:
-            risk_factors.append('high_volatility')
-        elif volatility < 0.20:
-            risk_factors.append('low_volatility')
-        
-        # Confidence risk
-        if signal.confidence < 0.6:
-            risk_factors.append('low_confidence')
-        
-        # Score risk
-        if score.total_score < 50:
-            risk_factors.append('low_score')
-        
-        # RSI extremes
-        rsi = indicators.get('rsi_14')
-        if rsi and (rsi < 25 or rsi > 75):
-            risk_factors.append('extreme_rsi')
-        
-        # Determine risk level
-        if len(risk_factors) >= 3 or 'high_volatility' in risk_factors:
-            return 'HIGH'
-        elif len(risk_factors) >= 1:
-            return 'MEDIUM'
-        else:
-            return 'LOW'
     
     def _build_reasons(
         self,
@@ -653,14 +698,39 @@ class StockScreener:
         
         if signal_filter:
             filtered = [r for r in filtered if r.signal_type == signal_filter]
+        filtered = [r for r in filtered if r.is_actionable]
         
-        # Sort by composite score (score + confidence)
-        filtered.sort(
-            key=lambda x: (x.score * x.confidence),
-            reverse=True
-        )
+        # Sort by composite score using model probability when available,
+        # otherwise fall back to heuristic signal agreement.
+        filtered.sort(key=self._recommendation_rank_key, reverse=True)
         
         return filtered[:top_n]
+
+    @staticmethod
+    def _recommendation_rank_key(recommendation: StockRecommendation) -> float:
+        """Rank recommendations by predicted probability first, then heuristics."""
+        probability = (
+            recommendation.predicted_probability_10d_up
+            if recommendation.predicted_probability_10d_up is not None
+            else -1.0
+        )
+        return (
+            probability * 1_000_000
+            + recommendation.heuristic_score * 1_000
+            + recommendation.signal_agreement
+        )
+
+    @staticmethod
+    def _map_signal_to_action(signal_type: SignalType) -> RecommendationAction:
+        """Map technical signal direction to the current long-only action language."""
+        mapping = {
+            SignalType.STRONG_BUY: RecommendationAction.STRONG_BUY,
+            SignalType.BUY: RecommendationAction.BUY,
+            SignalType.HOLD: RecommendationAction.HOLD,
+            SignalType.SELL: RecommendationAction.AVOID,
+            SignalType.STRONG_SELL: RecommendationAction.STRONGLY_AVOID,
+        }
+        return mapping[signal_type]
     
     def format_recommendation(self, rec: StockRecommendation) -> str:
         """
@@ -673,11 +743,11 @@ class StockScreener:
             Formatted string
         """
         emoji_map = {
-            SignalType.STRONG_BUY: "🚀",
-            SignalType.BUY: "📈",
-            SignalType.HOLD: "⏸️",
-            SignalType.SELL: "📉",
-            SignalType.STRONG_SELL: "⚠️"
+            RecommendationAction.STRONG_BUY: "🚀",
+            RecommendationAction.BUY: "📈",
+            RecommendationAction.HOLD: "⏸️",
+            RecommendationAction.AVOID: "🛑",
+            RecommendationAction.STRONGLY_AVOID: "⚠️",
         }
         
         risk_emoji = {
@@ -686,28 +756,36 @@ class StockScreener:
             'HIGH': '🔴'
         }
         
-        emoji = emoji_map.get(rec.signal_type, "")
-        risk = risk_emoji.get(rec.risk_level, "")
+        emoji = emoji_map.get(rec.action_type, "")
+        risk = risk_emoji.get(rec.heuristic_risk_level, "")
         
         output = f"\n{'='*60}\n"
         output += f"{emoji} {rec.stock_code} - {rec.stock_name}\n"
         output += f"{'='*60}\n\n"
         
-        output += f"Recommendation: {rec.signal_type.value}\n"
-        output += f"Confidence: {rec.confidence*100:.0f}%\n"
-        output += f"Overall Score: {rec.score:.1f}/100 ({rec.score_category.value})\n"
-        output += f"Risk Level: {risk} {rec.risk_level}\n\n"
+        output += f"Action: {rec.action_type.value}\n"
+        output += f"Technical Signal: {rec.signal_type.value}\n"
+        output += f"Signal Agreement: {rec.signal_agreement*100:.0f}%\n"
+        if rec.predicted_probability_10d_up is not None:
+            output += (
+                f"Predicted 10D Up Probability: "
+                f"{rec.predicted_probability_10d_up*100:.0f}%\n"
+            )
+        output += (
+            f"Heuristic Score: {rec.heuristic_score:.1f}/100 "
+            f"({rec.heuristic_score_category.value})\n"
+        )
+        output += f"Heuristic Risk: {risk} {rec.heuristic_risk_level}\n\n"
         
         output += f"Price Information:\n"
         output += f"  Current: ₦{rec.current_price:,.2f}\n"
-        if rec.target_price:
-            output += f"  Target:  ₦{rec.target_price:,.2f}\n"
-        if rec.stop_loss:
-            output += f"  Stop Loss: ₦{rec.stop_loss:,.2f}\n"
-        
-        if rec.target_price and rec.current_price:
-            potential_gain = ((rec.target_price - rec.current_price) / rec.current_price) * 100
-            output += f"  Potential: {potential_gain:+.1f}%\n"
+        if rec.policy_target_price:
+            output += f"  Policy Target: ₦{rec.policy_target_price:,.2f}\n"
+        if rec.policy_stop_loss:
+            output += f"  Policy Stop:   ₦{rec.policy_stop_loss:,.2f}\n"
+        if rec.policy_target_price and rec.current_price:
+            potential_gain = ((rec.policy_target_price - rec.current_price) / rec.current_price) * 100
+            output += f"  Policy Upside: {potential_gain:+.1f}%\n"
         
         output += f"\nReasons:\n"
         for i, reason in enumerate(rec.reasons[:5], 1):
