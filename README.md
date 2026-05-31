@@ -4,9 +4,6 @@ Daily NGX market-data pipeline with staging, reconciliation, indicators, alerts,
 
 ## Current State
 
-This repository is in active cleanup and validation after a major schema and
-recommendation-model correction pass.
-
 What the codebase currently does:
 
 - fetches current NGX quotes from Afrimarket
