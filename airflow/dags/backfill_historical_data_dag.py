@@ -21,26 +21,40 @@ Triggered manually via:
     --conf '{"test": true}'  # 1 year, 5 stocks
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import sys
 import os
 from pathlib import Path
-import json
 
 import pendulum
-from airflow.decorators import dag, task, task_group
-from airflow.operators.python import PythonOperator
-from airflow.models import Variable
-from airflow.utils.trigger_rule import TriggerRule
+from airflow.decorators import dag, task
 from airflow.exceptions import AirflowException
 
-# Add project root to path
-sys.path.insert(0, '/home/Stock_pipeline')
+# Add project root to path. Airflow containers mount the app at /Stock_pipeline;
+# local checks can still resolve from the repository layout.
+for candidate in (
+    os.environ.get("STOCK_PIPELINE_ROOT"),
+    "/Stock_pipeline",
+    str(Path(__file__).resolve().parents[2]),
+):
+    if candidate and candidate not in sys.path:
+        sys.path.insert(0, candidate)
 
 from scripts.backfill_historical_afrimarket import HistoricalBackfill
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+LOCAL_TZ = pendulum.timezone("Africa/Lagos")
+
+
+def _parse_backfill_date(value: str) -> date:
+    """Parse configured backfill dates, including documented relative aliases."""
+    normalized = value.strip().upper()
+    if normalized == "TODAY":
+        return date.today()
+    if normalized == "YESTERDAY":
+        return date.today() - timedelta(days=1)
+    return datetime.strptime(value, "%Y-%m-%d").date()
 
 # Default arguments for all tasks
 DEFAULT_ARGS = {
@@ -60,8 +74,9 @@ DEFAULT_ARGS = {
     description="Manual backfill of historical Afrimarket data to staging",
     default_args=DEFAULT_ARGS,
     schedule_interval=None,  # NOT scheduled - manual trigger only
-    start_date=pendulum.parse("2026-01-01"),
+    start_date=pendulum.datetime(2026, 1, 1, tz=LOCAL_TZ),
     catchup=False,
+    max_active_runs=1,
     tags=["manual", "backfill", "staging"],
     doc_md=__doc__,
 )
@@ -152,12 +167,10 @@ def backfill_historical_data_dag():
                 logger.info("Running in TEST MODE: 1 year, first 5 stocks")
                 # Will be handled by HistoricalBackfill class
             elif parsed_config.get('start_date') and parsed_config.get('end_date'):
-                from datetime import datetime
-                start_date = datetime.strptime(parsed_config['start_date'], '%Y-%m-%d').date()
-                end_date = datetime.strptime(parsed_config['end_date'], '%Y-%m-%d').date()
+                start_date = _parse_backfill_date(parsed_config['start_date'])
+                end_date = _parse_backfill_date(parsed_config['end_date'])
                 logger.info(f"Using date range: {start_date} to {end_date}")
             elif parsed_config.get('years'):
-                from datetime import timedelta, date
                 end_date = date.today() - timedelta(days=1)
                 start_date = date.today() - timedelta(days=365 * parsed_config['years'])
                 logger.info(f"Using {parsed_config['years']} years: {start_date} to {end_date}")

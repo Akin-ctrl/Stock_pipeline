@@ -1,9 +1,9 @@
 """
 Nigerian Stock Exchange ETL Pipeline DAG V2 (Afrimarket + Staging)
 
-This DAG orchestrates the daily extraction, transformation, and loading of Nigerian
+This DAG orchestrates the weekday extraction, transformation, and loading of Nigerian
 stock market data from Afrimarket with staging and reconciliation.
-Runs daily at 3PM WAT (after market close at 2:30 PM WAT) to capture the day's trading data.
+Runs Monday-Friday at 5PM WAT (UTC+1) to capture the day's trading data.
 
 Pipeline Stages (Staging Workflow):
 1. Fetch data from Afrimarket
@@ -16,20 +16,17 @@ Pipeline Stages (Staging Workflow):
 8. Evaluate alert rules and generate notifications
 9. Generate investment recommendations
 
-Schedule: Daily at 3:00 PM WAT (14:00 UTC)
+Schedule: Weekdays at 5:00 PM WAT (16:00 UTC)
 Retries: 3 attempts with 5-minute delays
 SLA: 30 minutes total pipeline execution time
 """
 
 from datetime import datetime, timedelta, date
-import sys
-import os
-from pathlib import Path
 
 import pendulum
-from airflow.decorators import dag, task
+from airflow.decorators import dag
 from airflow.operators.python import PythonOperator
-from airflow.operators.email import EmailOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.models.baseoperator import chain
 from sqlalchemy import text
 
@@ -39,6 +36,7 @@ from app.pipelines.orchestrator import PipelineOrchestrator, PipelineConfig
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+LOCAL_TZ = pendulum.timezone("Africa/Lagos")
 
 # Default arguments for all tasks
 DEFAULT_ARGS = {
@@ -471,7 +469,7 @@ def generate_daily_summary_v2(**context) -> str:
     • Reconciliation Rate: {reconciliation_rate_pct:.1f}%
     
     ───────────────────────────────────────
-    Next run: Tomorrow at 3:00 PM WAT
+    Next run: Next weekday at 5:00 PM WAT
     """
     
     logger.info(summary)
@@ -481,13 +479,13 @@ def generate_daily_summary_v2(**context) -> str:
 @dag(
     dag_id="nigerian_stock_pipeline_v2",
     description="V2: Afrimarket ETL pipeline with staging, reconciliation, alerts and recommendations",
-    schedule="0 14 * * *",  # 2PM UTC = 3PM WAT (West Africa Time is UTC+1)
-    start_date=pendulum.datetime(2026, 1, 23, tz="UTC"),  # Start from today
+    schedule="0 17 * * 1-5",  # 5PM Africa/Lagos, Monday-Friday
+    start_date=pendulum.datetime(2026, 1, 23, tz=LOCAL_TZ),
     catchup=False,  # Don't backfill - V2 is new
     max_active_runs=1,  # Only one pipeline run at a time
-    max_active_tasks=10,  # Allow parallel task execution
+    max_active_tasks=4,  # Keep LocalExecutor capacity available for follow-up DAGs
     default_args=DEFAULT_ARGS,
-    tags=["nigerian_stocks", "etl", "daily", "v2", "afrimarket", "staging"],
+    tags=["nigerian_stocks", "etl", "weekday", "v2", "afrimarket", "staging"],
     doc_md=__doc__,
     default_view="graph",
     orientation="LR",  # Left-to-right graph layout
@@ -495,7 +493,7 @@ def generate_daily_summary_v2(**context) -> str:
 )
 def nigerian_stock_pipeline_v2_dag():
     """
-    Daily Nigerian Stock Exchange ETL Pipeline V2 (Afrimarket + Staging)
+    Weekday Nigerian Stock Exchange ETL Pipeline V2 (Afrimarket + Staging)
     
     Orchestrates Afrimarket data ingestion, staging area processing,
     price reconciliation, validation, transformation, loading to PostgreSQL, 
@@ -579,7 +577,7 @@ def nigerian_stock_pipeline_v2_dag():
         """,
     )
     
-    # Task 2: Check SLA compliance
+    # Task 7: Check SLA compliance
     check_sla = PythonOperator(
         task_id="check_sla_v2",
         python_callable=check_pipeline_sla_v2,
@@ -596,7 +594,7 @@ def nigerian_stock_pipeline_v2_dag():
         """,
     )
     
-    # Task 3: Generate daily summary
+    # Task 8: Generate daily summary
     generate_summary = PythonOperator(
         task_id="generate_daily_summary_v2",
         python_callable=generate_daily_summary_v2,
@@ -617,6 +615,27 @@ def nigerian_stock_pipeline_v2_dag():
         **Output**: Formatted summary for email notifications
         """,
     )
+
+    trigger_daily_snapshot = TriggerDagRunOperator(
+        task_id="trigger_daily_steady_snapshot",
+        trigger_dag_id="daily_steady_snapshot",
+        trigger_run_id="daily_steady_snapshot__{{ dag_run.run_id }}",
+        conf={
+            "source_dag_id": "{{ dag.dag_id }}",
+            "source_run_id": "{{ dag_run.run_id }}",
+            "market_date": "{{ ti.xcom_pull(task_ids='transform_and_load_v2').get('latest_price_date') if ti.xcom_pull(task_ids='transform_and_load_v2') else ds }}",
+        },
+        reset_dag_run=True,
+        wait_for_completion=False,
+        trigger_rule="all_success",
+        doc_md="""
+        ### Trigger Daily Recommendation Snapshot
+
+        Starts the dashboard snapshot DAG only after the stock pipeline has
+        completed successfully, keeping recommendations chained to fresh data
+        instead of a separate wall-clock schedule.
+        """,
+    )
     
     # Define task dependencies using chain for linear flow
     chain(
@@ -627,6 +646,7 @@ def nigerian_stock_pipeline_v2_dag():
         evaluate_alerts,
         generate_recommendations,
         [check_sla, generate_summary],
+        trigger_daily_snapshot,
     )
 
 
