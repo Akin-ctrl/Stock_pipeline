@@ -1,216 +1,290 @@
 # Nigerian Stock Pipeline
 
-Daily NGX market-data pipeline with staging, reconciliation, indicators, alerts, recommendations, and historical backfill support.
+An end-to-end market data and screening platform for Nigerian Exchange (NGX) equities. Built on a dimensional data model with a full staging and reconciliation layer, a technical indicator engine, an alert and recommendation system with backtesting, and a semantic dashboard view layer. Orchestrated with Apache Airflow and visualised through Metabase.
 
-## Current State
+---
 
-What the codebase currently does:
+## What This System Does
 
-- fetches current NGX quotes from Afrimarket
-- stages fetched records in PostgreSQL
-- reconciles staged records through a staging audit workflow
-- loads reconciled daily price facts into one production price table
-- computes technical indicators from stored close-price history
-- evaluates alert rules
-- generates profile-based recommendations
-- supports historical backfill from Afrimarket history into staging
-- supports historical indicator backfill from trusted stored price history
-- exposes dashboard-ready semantic views for recommendations, model health,
-  backtests, and data quality
+The pipeline runs automatically every weekday at 5:00 PM Africa/Lagos time. From a single trigger it:
 
-What still needs validation or future source expansion:
+1. Fetches current NGX quote data from Afrimarket
+2. Loads source observations into a staging layer with full audit tracking
+3. Reconciles staged records and promotes trusted rows to production fact tables
+4. Computes 14 technical indicators across the full price history
+5. Evaluates configurable alert rules across the stock universe
+6. Generates profile-based screening recommendations with risk/reward metadata
+7. Refreshes dashboard-ready semantic views for BI reporting
 
-- broad multi-source reconciliation
-- robust fundamentals-driven investing
-- evidence-based threshold calibration on refreshed historical data
-- official NGX document, corporate-action, and fundamentals ingestion
+Historical price data can be backfilled up to 5 years via a dedicated DAG. Technical indicators are backfilled separately from trusted production price rows, keeping reruns idempotent.
 
-## Data Reality
+---
 
-The current live source mix is constrained by NGX data availability:
+## Architecture
 
-- current quotes: Afrimarket adapter
-- historical backfill: Afrimarket history
-- official NGX PDFs and filing ingestion: not yet implemented in the live pipeline
-
-Because of that, the project should currently be treated as:
-
-- a market-data and screening platform in validation and dashboard-prep mode
-- not a fully validated automated investing engine
-
-## Current Architecture
-
-```text
-Afrimarket current quotes
-    -> staging_daily_prices
-    -> staging_audit_log
-    -> fact_daily_prices
-    -> fact_technical_indicators
-    -> alert_history / fact_recommendations
-    -> dashboard semantic views
+```
+Afrimarket (current + historical)
+        │
+        ▼
+staging_daily_prices  ──►  staging_audit_log
+        │
+        ▼ (reconciliation + promotion)
+fact_daily_prices
+        │
+        ├──►  fact_technical_indicators
+        │
+        ├──►  alert_rules / alert_history
+        │
+        └──►  fact_recommendations
+                    │
+                    ▼
+          Dashboard semantic views
+          (Metabase / any BI tool)
 ```
 
-Core tables in the current code:
+The application layer is structured in six explicit layers: configuration, SQLAlchemy models, repository, service, pipeline orchestration, and Airflow DAGs. The staging design is built for future multi-source reconciliation even though the current ingestion path is single-source.
 
-- `dim_sectors`
-- `dim_stocks`
-- `staging_daily_prices`
-- `staging_audit_log`
-- `fact_daily_prices`
-- `fact_technical_indicators`
-- `fact_recommendations`
-- `alert_rules`
-- `alert_history`
+---
 
-## Current Indicators
+## Data Model
 
-The live indicator model stores:
+### Dimension Tables
+| Table | Purpose |
+|---|---|
+| `dim_sectors` | Canonical sector master list |
+| `dim_stocks` | Security master — all NGX-tracked stocks with listing/delisting metadata |
 
-- `ma_7`
-- `ma_30`
-- `ma_90`
-- `rsi_14`
-- `macd`
-- `macd_signal`
-- `macd_histogram`
-- `bollinger_upper`
-- `bollinger_middle`
-- `bollinger_lower`
-- `volatility_30`
-- `atr_14`
-- `ma_crossover_signal`
-- `trend_strength`
+### Staging Tables
+| Table | Purpose |
+|---|---|
+| `staging_daily_prices` | Source-aware raw observations before reconciliation |
+| `staging_audit_log` | Reconciliation decisions, source sets, severity records |
 
-## Current Recommendation Profile
+### Fact Tables
+| Table | Purpose |
+|---|---|
+| `fact_daily_prices` | Canonical production daily prices with trust, lineage, and promotion metadata |
+| `fact_technical_indicators` | 14 computed indicators per stock per day |
+| `fact_recommendations` | Scored recommendations with outcome tracking |
+| `alert_rules` / `alert_history` | Configurable alert definitions and trigger history |
 
-The recommendation engine now uses a single steady profile:
+### Semantic View Layer
 
-- `steady_20p_10d`
+Dashboard reporting is implemented as database views rather than additional physical tables. Current views:
 
-This profile biases the model toward stable 10-day momentum and moderate volatility rather than extreme spikes.
+- `vw_market_overview`
+- `vw_stock_price_panel`
+- `vw_recommendation_board`
+- `vw_daily_recommendation_board`
+- `vw_sector_performance`
+- `vw_model_health`
+- `vw_backtest_equity_curve`
+- `vw_data_quality_monitor`
 
-## Known Limitations
+Raw backtest artifacts are stored in `backtest_runs`, `backtest_trades`, `recommendation_snapshots`, and `decision_signals`.
 
-The current codebase still has important gaps:
+---
 
-- the pipeline is operationally single-source even though staging supports reconciliation
-- historical data quality varies by field
-- source trust is constrained until official NGX or paid-source validation is added
-- recommendation thresholds still need calibration against refreshed historical outcomes
-- current recommendations are screening candidates, not autonomous trade instructions
+## Technical Indicators
 
-See:
+All 14 indicators are computed from trusted `fact_daily_prices` rows and stored per stock per trading day:
 
-- [Model Redesign Backlog](./docs/MODEL_REDESIGN_BACKLOG.md)
-- [Cleanup Plan](./docs/CLEANUP_PLAN.md)
-- [Architecture Redesign Proposal](./docs/ARCHITECTURE_REDESIGN_PROPOSAL.md)
-- [Schema Transition Map](./docs/SCHEMA_TRANSITION_MAP.md)
+| Indicator | Description |
+|---|---|
+| `ma_7`, `ma_30`, `ma_90` | Simple moving averages |
+| `rsi_14` | Relative Strength Index |
+| `macd`, `macd_signal`, `macd_histogram` | MACD components |
+| `bollinger_upper`, `bollinger_middle`, `bollinger_lower` | Bollinger Bands |
+| `volatility_30` | 30-day rolling volatility |
+| `atr_14` | Average True Range |
+| `ma_crossover_signal` | MA crossover detection |
+| `trend_strength` | Composite trend score |
+
+---
+
+## Recommendation Engine
+
+The recommendation engine separates concerns clearly:
+
+- **`action_type`** — long-only user-facing action: `STRONG_BUY`, `BUY`, `HOLD`, `AVOID`, `STRONGLY_AVOID`
+- **`technical_signal_type`** — underlying technical signal: `STRONG_BUY`, `BUY`, `HOLD`, `SELL`, `STRONG_SELL`
+- **`signal_agreement`** — heuristic signal agreement, not predictive probability
+- **`predicted_probability_10d_up`** — model-estimated probability of a positive 10-trading-day move
+- **`heuristic_score`** — composite score across technical, momentum, volatility, trend, and volume sub-scores
+- **`risk_reward_ratio`**, **`policy_target_price`**, **`policy_stop_loss`** — policy-level position parameters
+
+An outlier guard excludes model dataset rows and backtest trade windows above 50% absolute return to prevent split-like or bad-data windows from distorting calibration.
+
+Current active profile: `steady_20p_10d` — biased toward stable 10-day momentum with moderate volatility tolerance.
+
+---
+
+## Alert Types
+
+Supported alert rule types: `PRICE_MOVEMENT`, `MA_CROSSOVER`, `VOLATILITY`, `VOLUME_SPIKE`, `RSI`, `MACD`, `CUSTOM`
+
+---
+
+## Stack
+
+| Component | Technology |
+|---|---|
+| Orchestration | Apache Airflow |
+| Database | PostgreSQL 16 |
+| Application | Python (SQLAlchemy, layered service architecture) |
+| Dashboard | Metabase |
+| DB Admin | PgAdmin |
+| Containerisation | Docker Compose |
+
+---
 
 ## Quick Start
 
-### Docker
+### Prerequisites
+- Docker and Docker Compose
+- A `.env` file configured from `.env.example`
+
+### Start the stack
 
 ```bash
 docker compose up -d --build
+docker compose ps
 ```
 
-Current service ports from `docker-compose.yml`:
+### Service ports
 
-- Airflow UI: `http://localhost:8080`
-- PostgreSQL: `localhost:5433`
-- PgAdmin: `http://localhost:5051`
-- Metabase: `http://localhost:3000`
+| Service | Port |
+|---|---|
+| Airflow UI | `http://localhost:8080` |
+| Metabase | `http://localhost:3000` |
+| PgAdmin | `http://localhost:5051` |
+| PostgreSQL | `localhost:5433` |
 
-### Airflow DAGs
+### Validate deployment
 
-Current DAGs:
+Once the stack is up, confirm the following before running the pipeline:
 
-- `nigerian_stock_pipeline_v2`
-- `backfill_historical_data`
-- `weekly_steady_backtest`
-- `daily_steady_snapshot`
+1. PostgreSQL is healthy
+2. Airflow webserver and scheduler are both running
+3. All four DAGs are visible in the Airflow UI
+4. Dashboard semantic views exist after migrations apply
 
-The daily pipeline DAG is defined with:
+---
 
-- schedule: `0 17 * * 1-5`
-- timezone intent: 5:00 PM Africa/Lagos, Monday-Friday
-- follow-up: triggers `daily_steady_snapshot` after successful completion
-- `is_paused_upon_creation=True`
+## Airflow DAGs
 
-### Historical Backfill
+| DAG | Schedule | Purpose |
+|---|---|---|
+| `nigerian_stock_pipeline_v2` | `0 17 * * 1-5` (5 PM WAT, weekdays) | Main daily pipeline — fetch, stage, reconcile, indicators, alerts, recommendations |
+| `daily_steady_snapshot` | Triggered by main DAG | Verifies recommendations are dashboard-ready after each run |
+| `weekly_steady_backtest` | `0 20 * * 5` (8 PM WAT, Fridays) | Refreshes weekly backtest results and snapshot artifacts |
+| `backfill_historical_data` | Manual trigger only | Loads historical price data into staging |
 
-Manual trigger example:
+The main DAG starts paused on creation. Unpause it in the Airflow UI when ready to go live.
+
+---
+
+## Historical Backfill
+
+Trigger a 5-year price backfill:
 
 ```bash
 docker compose exec airflow-scheduler airflow dags trigger backfill_historical_data \
   --conf '{"years": 5}'
 ```
 
-Price backfill loads historical Afrimarket price observations into staging and
-then through the main promotion path. Indicator history is backfilled separately
-from trusted `fact_daily_prices` rows with:
+Backfill technical indicators after a large price reload:
 
 ```bash
 python scripts/backfill_historical_indicators.py
 ```
 
-## Recommended Usage Right Now
+Price history and indicator history are backfilled separately by design. This keeps reruns safe and idempotent.
 
-Prefer:
+---
 
-- Airflow DAG execution for the main workflow
-- historical backfill script/DAG for data accumulation
-- historical indicator backfill after large price reloads
-- direct inspection of PostgreSQL tables and logs
+## Weekly Backtest
 
-Use the CLI as a trimmed companion surface for aligned pipeline runs and
-read-only inspection. Airflow remains the primary operational control plane.
-
-## Documentation
-
-- [Docs Index](./docs/README.md)
-- [System Overview](./docs/1_SYSTEM_OVERVIEW.md)
-- [Technical Architecture](./docs/2_TECHNICAL_ARCHITECTURE.md)
-- [Deployment Guide](./docs/3_DEPLOYMENT_GUIDE.md)
-- [User Guide](./docs/4_USER_GUIDE.md)
-
-## Weekly Backtest + Dashboard
-
-Run the weekly report once (full run):
+Full run:
 
 ```bash
-docker compose exec -T airflow-webserver sh -lc "python /Stock_pipeline/scripts/weekly_backtest_report.py"
+docker compose exec -T airflow-webserver sh -lc \
+  "python /Stock_pipeline/scripts/weekly_backtest_report.py"
 ```
 
-Smoke test (fast, 30 days, subset):
+Smoke test (30 days, subset):
 
 ```bash
-docker compose exec -T airflow-webserver sh -lc "python /Stock_pipeline/scripts/weekly_backtest_report.py --smoke"
+docker compose exec -T airflow-webserver sh -lc \
+  "python /Stock_pipeline/scripts/weekly_backtest_report.py --smoke"
 ```
 
-Then open Metabase and connect it to the `stock_pipeline` database to visualize:
-
-- dashboard semantic views such as `vw_daily_recommendation_board`,
-  `vw_model_health`, `vw_backtest_equity_curve`, and `vw_data_quality_monitor`
-- `backtest_runs`
-- `backtest_trades`
-- `recommendation_snapshots`
-
-Metabase seed dashboard (template):
+Generate Metabase seed dashboard:
 
 ```bash
 python scripts/generate_metabase_seed.py
 ```
-- [Architecture Redesign Proposal](./docs/ARCHITECTURE_REDESIGN_PROPOSAL.md)
-- [Schema Transition Map](./docs/SCHEMA_TRANSITION_MAP.md)
 
-## Next Direction
+---
 
-The current next direction is:
+## Environment Variables
 
-1. validate the refreshed historical dataset and model behavior
-2. calibrate score and probability thresholds from real backtest results
-3. polish dashboard semantic views for finance-style reporting
-4. keep documentation aligned with the implemented schema and DAGs
-5. bring official NGX documents, corporate actions, and fundamentals into the
-   ingestion model when real sources are available
+The settings loader expects these variables in `.env`:
+
+```
+POSTGRES_HOST
+POSTGRES_PORT
+POSTGRES_DB
+POSTGRES_USER
+POSTGRES_PASSWORD
+```
+
+Email and Slack notification variables are also supported. See `.env.example` for the full reference.
+
+---
+
+## Common Commands
+
+```bash
+# Logs
+docker compose logs -f airflow-scheduler
+docker compose logs -f app
+
+# Enter containers
+docker compose exec app bash
+docker compose exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+
+# Restart services
+docker compose restart airflow-scheduler
+docker compose restart app
+```
+
+---
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [System Overview](docs/1_SYSTEM_OVERVIEW.md) | What the system does, data model, current scope |
+| [Technical Architecture](docs/2_TECHNICAL_ARCHITECTURE.md) | Layer breakdown, schema detail, service classes |
+| [Deployment Guide](docs/3_DEPLOYMENT_GUIDE.md) | Docker setup, DAG reference, operational commands |
+| [User Guide](docs/4_USER_GUIDE.md) | How to use the pipeline, dashboard views, CLI |
+| [Architecture Redesign Proposal](docs/ARCHITECTURE_REDESIGN_PROPOSAL.md) | Multi-source expansion roadmap |
+| [Schema Transition Map](docs/SCHEMA_TRANSITION_MAP.md) | Schema evolution and migration reference |
+| [Model Redesign Backlog](docs/MODEL_REDESIGN_BACKLOG.md) | Recommendation model improvement backlog |
+
+---
+
+## Roadmap
+
+- Multi-source reconciliation (official NGX data, paid feeds)
+- Corporate actions and fundamentals ingestion
+- Evidence-based recommendation threshold calibration
+- Dashboard presentation layer polish
+- Orchestrator refactor into cleaner stage services
+
+---
+
+## Scope Note
+
+The current system is a **market-data and screening platform**, not a fully validated automated investing engine. Recommendations are screening candidates for manual review. Validate outputs at the table, view, log, and backtest-result level before drawing conclusions from dashboard displays.
