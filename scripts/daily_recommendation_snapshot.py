@@ -1,69 +1,89 @@
 #!/usr/bin/env python3
-"""
-Capture daily steady-profile recommendations for dashboards.
-"""
+"""Verify daily steady-profile recommendations for dashboard views."""
 
 from __future__ import annotations
 
+import argparse
 from datetime import date
 import logging
 
 from app.config.database import get_db
-from app.models import Base, DailyRecommendationSnapshot
-from app.services.advisory.advisor import RecommendationProfile, StockScreener
+from app.models import FactDailyPrice, FactRecommendation
+from app.services.advisory.advisor import RecommendationProfile
+from sqlalchemy import desc, func
 
 
-def _as_float(value):
-    return float(value) if value is not None else None
+def _parse_iso_date(raw_value: str) -> date:
+    try:
+        return date.fromisoformat(raw_value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"Expected YYYY-MM-DD date, got {raw_value!r}"
+        ) from exc
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Capture daily steady-profile recommendations for dashboards."
+    )
+    parser.add_argument(
+        "--snapshot-date",
+        "--market-date",
+        dest="snapshot_date",
+        type=_parse_iso_date,
+        help="Market/recommendation date to snapshot, formatted as YYYY-MM-DD.",
+    )
+    return parser.parse_args()
+
+
+def _resolve_snapshot_date(session, requested_date: date | None) -> date:
+    if requested_date is not None:
+        return requested_date
+
+    latest_recommendation_date = session.query(
+        func.max(FactRecommendation.recommendation_date)
+    ).scalar()
+    if latest_recommendation_date is not None:
+        return latest_recommendation_date
+
+    latest_price_date = session.query(func.max(FactDailyPrice.price_date)).scalar()
+    if latest_price_date is not None:
+        return latest_price_date
+
+    return date.today()
 
 
 def main() -> None:
+    args = _parse_args()
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
     logging.getLogger("stock_screener").setLevel(logging.WARNING)
 
-    snapshot_date = date.today()
     profile = RecommendationProfile.STEADY_20P_10D.value
 
     db = get_db()
-    Base.metadata.create_all(db.engine)
     with db.get_session() as session:
-        session.query(DailyRecommendationSnapshot).filter(
-            DailyRecommendationSnapshot.snapshot_date == snapshot_date,
-            DailyRecommendationSnapshot.profile == profile,
-        ).delete(synchronize_session=False)
-
-        screener = StockScreener(session, strategy_profile=profile)
-        recommendations = screener.generate_recommendations(
-            recommendation_date=snapshot_date,
-            strategy_profile=profile,
-        )
-        recommendations.sort(key=lambda rec: float(rec.score), reverse=True)
-
-        rows = []
-        for rec in recommendations[:10]:
-            rows.append(
-                DailyRecommendationSnapshot(
-                    snapshot_date=snapshot_date,
-                    profile=profile,
-                    stock_code=rec.stock_code,
-                    company_name=rec.stock_name,
-                    signal_type=rec.signal_type.value,
-                    confidence=_as_float(rec.confidence),
-                    score=_as_float(rec.score),
-                    current_price=_as_float(rec.current_price),
-                    target_price=_as_float(rec.target_price),
-                    stop_loss=_as_float(rec.stop_loss),
-                    reasons=rec.reasons,
-                )
+        snapshot_date = _resolve_snapshot_date(session, args.snapshot_date)
+        recommendations = (
+            session.query(FactRecommendation)
+            .filter(
+                FactRecommendation.recommendation_date == snapshot_date,
+                FactRecommendation.profile == profile,
             )
-
-        session.add_all(rows)
+            .order_by(
+                desc(FactRecommendation.predicted_probability_10d_up),
+                desc(FactRecommendation.heuristic_score),
+                desc(FactRecommendation.signal_agreement),
+            )
+            .limit(10)
+            .all()
+        )
 
     print(
         {
             "snapshot_date": snapshot_date.isoformat(),
             "profile": profile,
-            "snapshots": len(recommendations[:10]),
+            "recommendations": len(recommendations),
+            "source": "fact_recommendations",
         }
     )
 

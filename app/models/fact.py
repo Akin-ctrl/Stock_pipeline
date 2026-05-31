@@ -14,6 +14,7 @@ from sqlalchemy import (
     Boolean, Text, TIMESTAMP, CheckConstraint, 
     ForeignKey, Index, BIGINT, Numeric
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -274,88 +275,69 @@ class FactTechnicalIndicator(Base, TimestampMixin):
 
 
 class FactRecommendation(Base, TimestampMixin):
+    """Model-aligned recommendation fact table.
+
+    The revamped advisor separates the user-facing long-only action from the
+    underlying technical signal and from the scoring/probability evidence.
+    This table stores that decision grain directly for dashboard use.
     """
-    Investment recommendation fact table.
-    
-    Stores AI-generated stock recommendations with confidence scores,
-    target prices, and reasoning.
-    
-    Attributes:
-        recommendation_id: Primary key
-        stock_id: Foreign key to dim_stocks
-        recommendation_date: Date of recommendation
-        signal_type: Trading signal (STRONG_BUY, BUY, HOLD, SELL, STRONG_SELL)
-        confidence_score: Confidence percentage (0-100)
-        overall_score: Overall stock score (0-100)
-        score_category: Score category (EXCELLENT, GOOD, FAIR, POOR, VERY_POOR)
-        current_price: Stock price at recommendation time
-        target_price: Estimated target price
-        stop_loss: Recommended stop-loss price
-        potential_return_pct: Expected return percentage
-        risk_level: Risk assessment (LOW, MEDIUM, HIGH)
-        recommendation_reason: Primary recommendation reason
-        technical_score: Technical analysis score (0-100)
-        momentum_score: Momentum score (0-100)
-        volatility_score: Volatility score (0-100)
-        trend_score: Trend score (0-100)
-        volume_score: Volume score (0-100)
-        rsi_value: RSI value at recommendation time
-        macd_value: MACD value at recommendation time
-        is_active: Whether recommendation is still active
-        outcome: Actual outcome (HIT_TARGET, HIT_STOP_LOSS, ONGOING, EXPIRED)
-        outcome_date: Date outcome was determined
-        actual_return_pct: Actual return if closed
-    
-    Indexes:
-        - (stock_id, recommendation_date) - for historical lookup
-        - (recommendation_date) - for date range queries
-        - (signal_type) - for filtering by recommendation type
-        - (is_active) - for active recommendations
-    """
+
     __tablename__ = 'fact_recommendations'
     
     recommendation_id = Column(BigInteger, primary_key=True, autoincrement=True)
     stock_id = Column(Integer, ForeignKey('dim_stocks.stock_id'), nullable=False)
     recommendation_date = Column(Date, nullable=False, index=True)
+    profile = Column(String(50), nullable=False, default='steady_20p_10d', index=True)
     
-    # Signal and scoring
-    signal_type = Column(
+    # Decision and model evidence
+    action_type = Column(
         String(20),
         nullable=False,
         index=True,
-        comment="Trading signal: STRONG_BUY, BUY, HOLD, SELL, STRONG_SELL"
+        comment="Long-only user action: STRONG_BUY, BUY, HOLD, AVOID, STRONGLY_AVOID"
     )
-    confidence_score = Column(
-        Numeric(5, 2),
+    technical_signal_type = Column(
+        String(20),
         nullable=False,
-        comment="Confidence percentage (0-100)"
+        index=True,
+        comment="Underlying technical signal: STRONG_BUY, BUY, HOLD, SELL, STRONG_SELL"
     )
-    overall_score = Column(
-        Numeric(5, 2),
+    signal_agreement = Column(
+        Numeric(6, 4),
         nullable=False,
-        comment="Overall stock score (0-100)"
+        comment="Heuristic signal agreement, stored as 0.0000-1.0000"
     )
-    score_category = Column(
+    predicted_probability_10d_up = Column(
+        Numeric(6, 4),
+        nullable=True,
+        comment="Estimated probability of a positive 10-trading-day move"
+    )
+    heuristic_score = Column(
+        Numeric(6, 2),
+        nullable=False,
+        comment="Rule-based heuristic score, 0-100"
+    )
+    heuristic_score_category = Column(
         String(20),
         nullable=False,
         comment="EXCELLENT, GOOD, FAIR, POOR, VERY_POOR"
     )
     
-    # Price targets
-    current_price = Column(Numeric(12, 2), nullable=False)
-    target_price = Column(Numeric(12, 2), nullable=True)
-    stop_loss = Column(Numeric(12, 2), nullable=True)
-    potential_return_pct = Column(Numeric(7, 2), nullable=True)
+    # Price policy
+    current_price = Column(Numeric(18, 4), nullable=False)
+    policy_target_price = Column(Numeric(18, 4), nullable=True)
+    policy_stop_loss = Column(Numeric(18, 4), nullable=True)
+    policy_upside_pct = Column(Numeric(8, 4), nullable=True)
+    policy_downside_pct = Column(Numeric(8, 4), nullable=True)
+    risk_reward_ratio = Column(Numeric(10, 4), nullable=True)
     
-    # Risk and reasoning
-    risk_level = Column(
+    # Risk, reasons, and score breakdown
+    heuristic_risk_level = Column(
         String(10),
         nullable=False,
         comment="LOW, MEDIUM, HIGH"
     )
-    recommendation_reason = Column(Text, nullable=True)
-    
-    # Score breakdown
+    reasons = Column(JSONB, default=list)
     technical_score = Column(Numeric(5, 2), nullable=True)
     momentum_score = Column(Numeric(5, 2), nullable=True)
     volatility_score = Column(Numeric(5, 2), nullable=True)
@@ -363,10 +345,10 @@ class FactRecommendation(Base, TimestampMixin):
     volume_score = Column(Numeric(5, 2), nullable=True)
     
     # Indicator values at time of recommendation
-    rsi_value = Column(Numeric(5, 2), nullable=True)
-    macd_value = Column(Numeric(10, 4), nullable=True)
+    rsi_14 = Column(Numeric(5, 2), nullable=True)
+    macd = Column(Numeric(18, 4), nullable=True)
     
-    # Outcome tracking
+    model_version = Column(String(50), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False, index=True)
     outcome = Column(
         String(20),
@@ -382,25 +364,39 @@ class FactRecommendation(Base, TimestampMixin):
     # Constraints
     __table_args__ = (
         CheckConstraint(
-            "signal_type IN ('STRONG_BUY', 'BUY', 'HOLD', 'SELL', 'STRONG_SELL')",
-            name='chk_signal_type'
+            "action_type IN ('STRONG_BUY', 'BUY', 'HOLD', 'AVOID', 'STRONGLY_AVOID')",
+            name='chk_recommendation_action_type'
         ),
         CheckConstraint(
-            "risk_level IN ('LOW', 'MEDIUM', 'HIGH')",
-            name='chk_risk_level'
+            "technical_signal_type IN ('STRONG_BUY', 'BUY', 'HOLD', 'SELL', 'STRONG_SELL')",
+            name='chk_recommendation_technical_signal_type'
         ),
         CheckConstraint(
-            'confidence_score >= 0 AND confidence_score <= 100',
-            name='chk_confidence_score'
+            'signal_agreement >= 0 AND signal_agreement <= 1',
+            name='chk_recommendation_signal_agreement'
         ),
         CheckConstraint(
-            'overall_score >= 0 AND overall_score <= 100',
-            name='chk_overall_score'
+            'predicted_probability_10d_up IS NULL OR '
+            '(predicted_probability_10d_up >= 0 AND predicted_probability_10d_up <= 1)',
+            name='chk_recommendation_predicted_probability'
+        ),
+        CheckConstraint(
+            "heuristic_risk_level IN ('LOW', 'MEDIUM', 'HIGH')",
+            name='chk_recommendation_risk_level'
+        ),
+        CheckConstraint(
+            'heuristic_score >= 0 AND heuristic_score <= 100',
+            name='chk_recommendation_heuristic_score'
+        ),
+        CheckConstraint(
+            'current_price > 0',
+            name='chk_recommendation_current_price_positive'
         ),
         Index(
-            'ux_recommendation_stock_date',
+            'ux_recommendation_stock_date_profile',
             'stock_id',
             'recommendation_date',
+            'profile',
             unique=True
         ),
     )
@@ -410,16 +406,16 @@ class FactRecommendation(Base, TimestampMixin):
         return (
             f"<FactRecommendation(id={self.recommendation_id}, "
             f"stock_id={self.stock_id}, date={self.recommendation_date}, "
-            f"signal={self.signal_type}, score={self.overall_score})>"
+            f"action={self.action_type}, score={self.heuristic_score})>"
         )
     
     def is_buy_signal(self) -> bool:
-        """Check if recommendation is a buy signal."""
-        return self.signal_type in ('BUY', 'STRONG_BUY')
+        """Check if recommendation is an actionable long-entry signal."""
+        return self.action_type in ('BUY', 'STRONG_BUY')
     
     def is_sell_signal(self) -> bool:
-        """Check if recommendation is a sell signal."""
-        return self.signal_type in ('SELL', 'STRONG_SELL')
+        """Check if recommendation is an avoid action in the long-only model."""
+        return self.action_type in ('AVOID', 'STRONGLY_AVOID')
     
     def get_days_active(self) -> Optional[int]:
         """Get number of days recommendation has been active."""

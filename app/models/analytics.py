@@ -112,34 +112,6 @@ class RecommendationSnapshot(Base, TimestampMixin):
     )
 
 
-class DailyRecommendationSnapshot(Base, TimestampMixin):
-    """Daily top recommendations for steady investing."""
-
-    __tablename__ = "daily_recommendation_snapshots"
-
-    snapshot_id = Column(BigInteger, primary_key=True, autoincrement=True)
-    snapshot_date = Column(Date, nullable=False, index=True)
-    profile = Column(String(50), nullable=False)
-
-    stock_code = Column(String(20), nullable=False)
-    company_name = Column(String(255), nullable=False)
-    signal_type = Column(String(20), nullable=False)
-    confidence = Column(Numeric(5, 4), nullable=False)
-    score = Column(Numeric(6, 2), nullable=False)
-    current_price = Column(Numeric(18, 4), nullable=False)
-    target_price = Column(Numeric(18, 4))
-    stop_loss = Column(Numeric(18, 4))
-    reasons = Column(JSONB, default=list)
-
-    created_at = Column(TIMESTAMP, default=datetime.utcnow)
-
-    __table_args__ = (
-        Index("idx_daily_reco_date", "snapshot_date"),
-        Index("idx_daily_reco_stock", "stock_code"),
-        Index("ux_daily_reco_date_profile_stock", "snapshot_date", "profile", "stock_code", unique=True),
-    )
-
-
 class DecisionSignal(Base, TimestampMixin):
     """Weekly decision flag derived from backtest performance."""
 

@@ -18,10 +18,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-date", required=True, help="End date in YYYY-MM-DD format")
     parser.add_argument("--horizon-days", type=int, default=5, help="Trading-day holding period")
     parser.add_argument("--stocks", default="", help="Comma-separated stock codes; blank = all active stocks")
-    parser.add_argument("--min-score", type=float, default=None, help="Minimum recommendation score")
-    parser.add_argument("--min-confidence", type=float, default=None, help="Minimum recommendation confidence")
+    parser.add_argument("--min-score", type=float, default=None, help="Legacy minimum heuristic score")
+    parser.add_argument("--min-confidence", type=float, default=None, help="Legacy minimum signal agreement")
+    parser.add_argument("--min-predicted-probability", type=float, default=None, help="Minimum predicted 10-day up probability")
     parser.add_argument("--strategy-profile", default="steady_20p_10d", choices=["steady_20p_10d"], help="Recommendation profile")
     parser.add_argument("--round-trip-cost-pct", type=float, default=0.20, help="Estimated total transaction cost in percent")
+    parser.add_argument("--max-abs-gross-return-pct", type=float, default=50.0, help="Exclude trades with absolute gross return above this percent; use a negative value to disable")
     parser.add_argument("--include-hold", action="store_true", help="Include HOLD signals in the evaluation")
     parser.add_argument("--summary-only", action="store_true", help="Print only aggregate metrics (omit full trade list)")
     return parser.parse_args()
@@ -36,11 +38,15 @@ def main() -> None:
     stock_codes = [code.strip().upper() for code in args.stocks.split(",") if code.strip()] or None
 
     db = get_db()
+    max_abs_gross_return_pct = (
+        None if args.max_abs_gross_return_pct < 0 else args.max_abs_gross_return_pct
+    )
     with db.get_session() as session:
         backtester = RecommendationBacktester(
             session=session,
             strategy_profile=args.strategy_profile,
             round_trip_cost_pct=args.round_trip_cost_pct,
+            max_abs_gross_return_pct=max_abs_gross_return_pct,
         )
         result = backtester.run(
             start_date=start_date,
@@ -49,6 +55,7 @@ def main() -> None:
             stock_codes=stock_codes,
             min_score=args.min_score,
             min_confidence=args.min_confidence,
+            min_predicted_probability=args.min_predicted_probability,
             include_hold=args.include_hold,
         )
 

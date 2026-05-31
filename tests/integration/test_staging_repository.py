@@ -1,6 +1,7 @@
 """Integration tests for StagingRepository."""
 
 import pytest
+import pandas as pd
 from datetime import date, timedelta
 from decimal import Decimal
 from sqlalchemy.orm import Session
@@ -14,18 +15,18 @@ from app.repositories.staging_repository import StagingRepository
 def staging_data(db_session: Session):
     """Create sample staging data with multiple dates and sources."""
     staging_records = [
-        # Date 1: NGX only
+        # Date 1: primary source only
         StagingDailyPrice(
             stock_code="DANGCEM",
             price_date=date(2026, 2, 10),
-            source="ngx",
+            source="afrimarket",
             close_price=Decimal("450.00"),
             reconciled=False
         ),
         StagingDailyPrice(
             stock_code="ZENITH",
             price_date=date(2026, 2, 10),
-            source="ngx",
+            source="afrimarket",
             close_price=Decimal("35.50"),
             reconciled=False
         ),
@@ -44,11 +45,11 @@ def staging_data(db_session: Session):
             close_price=Decimal("35.20"),
             reconciled=False
         ),
-        # Date 3: Both sources (conflict)
+        # Date 3: two sources (conflict)
         StagingDailyPrice(
             stock_code="DANGCEM",
             price_date=date(2026, 2, 8),
-            source="ngx",
+            source="secondary_source",
             close_price=Decimal("445.00"),
             reconciled=False
         ),
@@ -63,7 +64,7 @@ def staging_data(db_session: Session):
         StagingDailyPrice(
             stock_code="ZENITH",
             price_date=date(2026, 2, 7),
-            source="ngx",
+            source="afrimarket",
             close_price=Decimal("34.80"),
             reconciled=True
         ),
@@ -107,7 +108,7 @@ class TestStagingRepository:
         """Test counting unreconciled records for specific date."""
         repo = StagingRepository(db_session)
         
-        # Feb 10: 2 records (NGX only)
+        # Feb 10: 2 records (primary source only)
         count_feb10 = repo.get_unreconciled_count(price_date=date(2026, 2, 10))
         assert count_feb10 == 2
         
@@ -133,13 +134,13 @@ class TestStagingRepository:
         assert len(records) == 2
         
         sources = {r.source for r in records}
-        assert sources == {"ngx", "afrimarket"}
+        assert sources == {"secondary_source", "afrimarket"}
     
     def test_get_conflicts_no_conflicts(self, db_session: Session, staging_data):
         """Test get_conflicts returns empty for dates with no conflicts."""
         repo = StagingRepository(db_session)
         
-        # Feb 10: No conflicts (NGX only)
+        # Feb 10: No conflicts (single source)
         conflicts = repo.get_conflicts(price_date=date(2026, 2, 10))
         assert len(conflicts) == 0
         
@@ -164,11 +165,8 @@ class TestStagingRepository:
         repo = StagingRepository(db_session)
         
         # Get unreconciled records for Feb 10
-        unreconciled = repo.get_all(
-            price_date=date(2026, 2, 10),
-            reconciled_only=False
-        )
-        unreconciled_ids = [r.staging_id for r in unreconciled if not r.reconciled]
+        unreconciled = repo.get_unreconciled(price_date=date(2026, 2, 10))
+        unreconciled_ids = [r.staging_id for r in unreconciled]
         
         # Mark as reconciled
         updated = repo.mark_reconciled(
@@ -181,32 +179,74 @@ class TestStagingRepository:
         # Verify they're now reconciled
         count = repo.get_unreconciled_count(price_date=date(2026, 2, 10))
         assert count == 0
+
+    def test_create_audit_log_is_idempotent(self, db_session: Session):
+        """Repeated reconciliation writes should update the same audit row."""
+        repo = StagingRepository(db_session)
+
+        first = repo.create_audit_log(
+            stock_code="DANGCEM",
+            price_date=date(2026, 2, 10),
+            sources=["afrimarket"],
+            prices=[Decimal("450.00")],
+            resolution_method="single_source",
+            selected_price=Decimal("450.00"),
+            selected_source="afrimarket",
+            conflict_severity="low",
+            notes="first pass",
+        )
+        second = repo.create_audit_log(
+            stock_code="DANGCEM",
+            price_date=date(2026, 2, 10),
+            sources=["afrimarket", "secondary_source"],
+            prices=[Decimal("450.00"), Decimal("451.00")],
+            resolution_method="prefer_source",
+            selected_price=Decimal("450.00"),
+            selected_source="afrimarket",
+            conflict_severity="medium",
+            notes="rerun",
+        )
+
+        logs = (
+            db_session.query(StagingAuditLog)
+            .filter(
+                StagingAuditLog.stock_code == "DANGCEM",
+                StagingAuditLog.price_date == date(2026, 2, 10),
+            )
+            .all()
+        )
+
+        assert first.audit_id == second.audit_id
+        assert len(logs) == 1
+        assert logs[0].resolution_method == "prefer_source"
+        assert logs[0].conflict_severity == "medium"
+        assert logs[0].notes == "rerun"
     
     def test_bulk_insert_staging(self, db_session: Session):
         """Test bulk inserting staging records."""
         repo = StagingRepository(db_session)
         
-        records = [
-            {
-                'stock_code': 'TESTSTOCK',
-                'price_date': date(2026, 2, 10),
-                'close_price': Decimal("100.00"),
-                'source': 'ngx'
-            },
-            {
-                'stock_code': 'TESTSTOCK2',
-                'price_date': date(2026, 2, 10),
-                'close_price': Decimal("200.00"),
-                'source': 'afrimarket'
-            }
-        ]
+        records = pd.DataFrame(
+            [
+                {
+                    'stock_code': 'TESTSTOCK',
+                    'price_date': date(2026, 2, 10),
+                    'close_price': Decimal("100.00"),
+                },
+                {
+                    'stock_code': 'TESTSTOCK2',
+                    'price_date': date(2026, 2, 10),
+                    'close_price': Decimal("200.00"),
+                }
+            ]
+        )
         
         inserted = repo.bulk_insert_staging(records, source='test')
         
         assert inserted == 2
         
         # Verify inserted
-        all_records = repo.get_all(price_date=date(2026, 2, 10), reconciled_only=False)
+        all_records = repo.get_unreconciled(price_date=date(2026, 2, 10))
         test_stocks = [r for r in all_records if r.stock_code in ['TESTSTOCK', 'TESTSTOCK2']]
         assert len(test_stocks) == 2
 
@@ -233,7 +273,7 @@ class TestStagingRepository:
             StagingDailyPrice(
                 stock_code="DANGCEM",
                 price_date=date(2026, 2, 8),
-                source="ngx",
+                source="secondary_source",
                 close_price=Decimal("445.00"),
                 change_1d_pct=Decimal("1.25"),
                 change_ytd_pct=Decimal("9.50"),
@@ -253,7 +293,7 @@ class TestStagingRepository:
             StagingAuditLog(
                 stock_code="DANGCEM",
                 price_date=date(2026, 2, 8),
-                sources=["ngx", "afrimarket"],
+                sources=["secondary_source", "afrimarket"],
                 prices=[Decimal("445.00"), Decimal("446.00")],
                 resolution_method="prefer_source",
                 selected_price=Decimal("446.00"),
@@ -295,25 +335,25 @@ class TestStagingRepository:
             StagingDailyPrice(
                 stock_code="GTCO",
                 price_date=date(2026, 2, 9),
-                source="ngx",
+                source="afrimarket",
                 close_price=Decimal("50.00"),
                 reconciled=True,
             ),
             StagingAuditLog(
                 stock_code="GTCO",
                 price_date=date(2026, 2, 9),
-                sources=["ngx"],
+                sources=["afrimarket"],
                 prices=[Decimal("50.00")],
                 resolution_method="single_source",
                 selected_price=Decimal("50.00"),
-                selected_source="ngx",
+                selected_source="afrimarket",
                 conflict_severity="low",
             ),
             FactDailyPrice(
                 stock_id=stock.stock_id,
                 price_date=date(2026, 2, 9),
                 close_price=Decimal("50.00"),
-                source="ngx",
+                source="afrimarket",
                 source_count=1,
                 bar_status="RECONCILED",
                 is_official=False,

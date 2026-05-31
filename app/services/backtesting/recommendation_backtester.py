@@ -7,10 +7,19 @@ from datetime import date, timedelta
 from typing import Dict, List, Optional
 
 from app.repositories import PriceRepository, StockRepository
-from app.services.advisory.advisor import RecommendationProfile, StockRecommendation, StockScreener
+from app.services.advisory.advisor import (
+    RecommendationAction,
+    RecommendationProfile,
+    StockRecommendation,
+    StockScreener,
+)
+from app.services.modeling.targets import (
+    DEFAULT_DIRECTION_TARGET,
+    calculate_forward_return_pct,
+)
 
 
-ACTIONABLE_SIGNALS = {"BUY", "STRONG_BUY", "SELL", "STRONG_SELL"}
+ACTIONABLE_ACTIONS = {"BUY", "STRONG_BUY"}
 
 
 @dataclass
@@ -18,9 +27,11 @@ class BacktestTrade:
     stock_code: str
     entry_date: date
     exit_date: date
+    action_type: str
     signal_type: str
     confidence: float
     score: float
+    predicted_probability_10d_up: Optional[float]
     entry_price: float
     exit_price: float
     gross_return_pct: float
@@ -123,21 +134,24 @@ class RecommendationBacktester:
         session,
         strategy_profile: str = RecommendationProfile.STEADY_20P_10D.value,
         round_trip_cost_pct: float = 0.20,
+        max_abs_gross_return_pct: Optional[float] = 50.0,
     ):
         self.session = session
         self.price_repo = PriceRepository(session)
         self.stock_repo = StockRepository(session)
         self.screener = StockScreener(session, strategy_profile=strategy_profile)
         self.round_trip_cost_pct = round_trip_cost_pct
+        self.max_abs_gross_return_pct = max_abs_gross_return_pct
 
     def run(
         self,
         start_date: date,
         end_date: date,
-        horizon_days: int = 5,
+        horizon_days: int = DEFAULT_DIRECTION_TARGET.horizon_trading_days,
         stock_codes: Optional[List[str]] = None,
         min_score: Optional[float] = None,
         min_confidence: Optional[float] = None,
+        min_predicted_probability: Optional[float] = None,
         include_hold: bool = False,
     ) -> BacktestResult:
         stocks = self._resolve_stocks(stock_codes)
@@ -165,14 +179,14 @@ class RecommendationBacktester:
                     recommendation_date=entry_date,
                     min_score=min_score,
                     min_confidence=min_confidence,
+                    min_predicted_probability=min_predicted_probability,
                 )
                 if recommendation is None:
                     continue
 
+                action_value = recommendation.action_type.value
                 signal_value = recommendation.signal_type.value
-                if self.screener.strategy_profile == RecommendationProfile.STEADY_20P_10D and signal_value in {"SELL", "STRONG_SELL"}:
-                    continue
-                if not include_hold and signal_value not in ACTIONABLE_SIGNALS:
+                if not include_hold and action_value not in ACTIONABLE_ACTIONS:
                     continue
 
                 exit_index = min(index + horizon_days, len(trading_dates) - 1)
@@ -181,10 +195,12 @@ class RecommendationBacktester:
                 exit_price = float(prices_by_date[exit_date].close_price)
 
                 gross_return_pct, correct_direction = self._evaluate_return(
-                    signal_value,
+                    recommendation.action_type,
                     entry_price,
                     exit_price,
                 )
+                if self._has_extreme_trade_return(gross_return_pct):
+                    continue
                 net_return_pct = gross_return_pct - self.round_trip_cost_pct
 
                 trades.append(
@@ -192,9 +208,11 @@ class RecommendationBacktester:
                         stock_code=stock.stock_code,
                         entry_date=entry_date,
                         exit_date=exit_date,
+                        action_type=action_value,
                         signal_type=signal_value,
                         confidence=float(recommendation.confidence),
                         score=float(recommendation.score),
+                        predicted_probability_10d_up=recommendation.predicted_probability_10d_up,
                         entry_price=entry_price,
                         exit_price=exit_price,
                         gross_return_pct=round(gross_return_pct, 4),
@@ -210,6 +228,11 @@ class RecommendationBacktester:
             trades=trades,
         )
 
+    def _has_extreme_trade_return(self, gross_return_pct: float) -> bool:
+        """Exclude split-like/outlier return windows from accuracy evaluation."""
+        threshold = self.max_abs_gross_return_pct
+        return threshold is not None and abs(gross_return_pct) > threshold
+
     def _resolve_stocks(self, stock_codes: Optional[List[str]]):
         if stock_codes:
             stocks = [self.stock_repo.get_by_code(code) for code in stock_codes]
@@ -222,27 +245,28 @@ class RecommendationBacktester:
         recommendation_date: date,
         min_score: Optional[float],
         min_confidence: Optional[float],
+        min_predicted_probability: Optional[float],
     ) -> Optional[StockRecommendation]:
         recommendations = self.screener.generate_recommendations(
             recommendation_date=recommendation_date,
             stock_codes=[stock_code],
             min_score=min_score,
             min_confidence=min_confidence,
+            min_predicted_probability=min_predicted_probability,
         )
         return recommendations[0] if recommendations else None
 
     def _evaluate_return(
         self,
-        signal_type: str,
+        action_type: RecommendationAction,
         entry_price: float,
         exit_price: float,
     ) -> tuple[float, bool]:
-        if signal_type in {"BUY", "STRONG_BUY"}:
-            gross_return = ((exit_price - entry_price) / entry_price) * 100.0
-            correct_direction = exit_price > entry_price
-        elif signal_type in {"SELL", "STRONG_SELL"}:
-            gross_return = ((entry_price - exit_price) / entry_price) * 100.0
-            correct_direction = exit_price < entry_price
+        forward_return_pct = calculate_forward_return_pct(entry_price, exit_price)
+
+        if action_type in {RecommendationAction.BUY, RecommendationAction.STRONG_BUY}:
+            gross_return = forward_return_pct
+            correct_direction = forward_return_pct > 0
         else:
             gross_return = 0.0
             correct_direction = False

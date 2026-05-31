@@ -32,20 +32,19 @@ Planned, not implemented:
 Planned next-phase work:
 
 - stronger staging-source lineage
-- richer trust metadata on `fact_daily_prices`
 - official NGX document ingestion
 - field-level confidence tracking where a real source supports it
 - cleaner separation between source observations and promoted production rows
 
 ## Strategy Layer
 
-Planned redesign:
+Planned refinement:
 
 - separate short-term screener
 - separate long-term screener
 - liquidity-aware ranking
 - sector-relative features
-- better walk-forward evaluation
+- evidence-based threshold calibration from walk-forward evaluation
 
 ## Portfolio And Execution Research
 
@@ -61,7 +60,9 @@ Highest current priority is not feature expansion.
 
 It is:
 
-1. architecture cleanup
-2. schema redesign
-3. data-quality hardening
-4. evaluation discipline
+1. validate the refreshed historical price and indicator dataset
+2. calibrate score and probability thresholds from real backtest results
+3. polish dashboard semantic views for finance-style reporting
+4. keep documentation synchronized with current code and DAGs
+5. expand sources, fundamentals, and corporate actions only when reliable
+   sources are available

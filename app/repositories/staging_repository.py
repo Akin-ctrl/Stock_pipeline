@@ -448,27 +448,51 @@ class StagingRepository(BaseRepository[StagingDailyPrice]):
             notes: Additional notes
             
         Returns:
-            Created audit log record
+            Created or updated audit log record
         """
         try:
-            audit_log = StagingAuditLog(
-                stock_code=stock_code,
-                price_date=price_date,
-                sources=sources,
-                prices=prices,
-                resolution_method=resolution_method,
-                selected_price=selected_price,
-                selected_source=selected_source,
-                conflict_severity=conflict_severity,
-                notes=notes
+            existing_logs = (
+                self.session.query(StagingAuditLog)
+                .filter(
+                    StagingAuditLog.stock_code == stock_code,
+                    StagingAuditLog.price_date == price_date,
+                )
+                .order_by(StagingAuditLog.audit_id.asc())
+                .all()
             )
-            
-            self.session.add(audit_log)
+            audit_log = existing_logs[0] if existing_logs else None
+
+            for duplicate in existing_logs[1:]:
+                self.session.delete(duplicate)
+
+            if audit_log:
+                audit_log.sources = sources
+                audit_log.prices = prices
+                audit_log.resolution_method = resolution_method
+                audit_log.selected_price = selected_price
+                audit_log.selected_source = selected_source
+                audit_log.conflict_severity = conflict_severity
+                audit_log.notes = notes
+            else:
+                audit_log = StagingAuditLog(
+                    stock_code=stock_code,
+                    price_date=price_date,
+                    sources=sources,
+                    prices=prices,
+                    resolution_method=resolution_method,
+                    selected_price=selected_price,
+                    selected_source=selected_source,
+                    conflict_severity=conflict_severity,
+                    notes=notes
+                )
+                self.session.add(audit_log)
+
+            self.session.flush()
             if commit:
                 self.session.commit()
             
             logger.debug(
-                f"Created audit log for {stock_code} on {price_date}: "
+                f"Upserted audit log for {stock_code} on {price_date}: "
                 f"{conflict_severity} severity, {resolution_method}"
             )
             

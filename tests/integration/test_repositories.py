@@ -124,6 +124,42 @@ class TestIndicatorRepository:
         assert indicator is not None
         assert indicator.ma_7 == Decimal("100.00")
 
+    def test_bulk_save_indicators_is_idempotent(self, db_session: Session, sample_stocks):
+        """Bulk save should upsert on stock/date instead of duplicating rows."""
+        repo = IndicatorRepository(db_session)
+        stock = sample_stocks[0]
+        calc_date = date.today()
+
+        first_count = repo.bulk_save_indicators(
+            [
+                {
+                    "stock_id": stock.stock_id,
+                    "calculation_date": calc_date,
+                    "ma_7": Decimal("100.00"),
+                    "rsi_14": Decimal("55.50"),
+                }
+            ]
+        )
+        second_count = repo.bulk_save_indicators(
+            [
+                {
+                    "stock_id": stock.stock_id,
+                    "calculation_date": calc_date,
+                    "ma_7": Decimal("101.25"),
+                    "rsi_14": Decimal("60.00"),
+                }
+            ]
+        )
+        db_session.commit()
+
+        rows = repo.get_indicator_history(stock.stock_id, start_date=calc_date, end_date=calc_date)
+
+        assert first_count == 1
+        assert second_count == 1
+        assert len(rows) == 1
+        assert rows[0].ma_7 == Decimal("101.2500")
+        assert rows[0].rsi_14 == Decimal("60.00")
+
 
 @pytest.mark.integration
 @pytest.mark.database

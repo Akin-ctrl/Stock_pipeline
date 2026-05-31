@@ -25,14 +25,19 @@ class TechnicalSignal:
     
     Attributes:
         signal_type: Type of signal (STRONG_BUY to STRONG_SELL)
-        confidence: Confidence score (0.0 to 1.0)
+        signal_agreement: Heuristic agreement score (0.0 to 1.0)
         reasons: List of reasons for the signal
         indicators: Dict of indicator values used
     """
     signal_type: SignalType
-    confidence: float
+    signal_agreement: float
     reasons: List[str]
     indicators: Dict[str, float]
+
+    @property
+    def confidence(self) -> float:
+        """Backward-compatible alias for legacy heuristic confidence access."""
+        return self.signal_agreement
 
 
 class SignalGenerator:
@@ -143,16 +148,16 @@ class SignalGenerator:
         if not signals:
             return TechnicalSignal(
                 signal_type=SignalType.HOLD,
-                confidence=0.5,
+                signal_agreement=0.5,
                 reasons=["Insufficient indicator data"],
                 indicators=indicators
             )
         
-        final_signal, confidence = self._aggregate_signals(signals)
+        final_signal, signal_agreement = self._aggregate_signals(signals)
         
         return TechnicalSignal(
             signal_type=final_signal,
-            confidence=confidence,
+            signal_agreement=signal_agreement,
             reasons=reasons if reasons else ["Mixed signals"],
             indicators=indicators
         )
@@ -322,9 +327,12 @@ class SignalGenerator:
         }
         
         emoji = emoji_map.get(signal.signal_type, "")
-        confidence_pct = signal.confidence * 100
+        signal_agreement_pct = signal.signal_agreement * 100
         
-        summary = f"{emoji} {signal.signal_type.value} (Confidence: {confidence_pct:.0f}%)\n"
+        summary = (
+            f"{emoji} {signal.signal_type.value} "
+            f"(Signal Agreement: {signal_agreement_pct:.0f}%)\n"
+        )
         summary += "Reasons:\n"
         for reason in signal.reasons:
             summary += f"  • {reason}\n"

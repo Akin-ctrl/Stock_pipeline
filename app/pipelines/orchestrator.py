@@ -1573,21 +1573,11 @@ class PipelineOrchestrator:
                             price_history=price_data
                         )
 
-                        existing_dates = indicator_repo.get_existing_dates(
-                            stock.stock_id,
-                            start_date=start_date,
-                            end_date=execution_date,
-                        )
-
-                        # Save to database
+                        # Save to database. Always upsert computed rows so
+                        # reruns repair stale indicator values instead of
+                        # preserving old calculations.
                         for indicator in indicators:
                             calculation_date = indicator['calculation_date']
-                            if (
-                                calculation_date in existing_dates and
-                                calculation_date != execution_date
-                            ):
-                                continue
-
                             values = {
                                 k: v for k, v in indicator.items()
                                 if k not in ('stock_id', 'calculation_date')
@@ -1799,8 +1789,10 @@ class PipelineOrchestrator:
                     )
                     
                     # Log top picks
-                    buy_picks = [r for r in recommendations 
-                                if r.signal_type.value in ('BUY', 'STRONG_BUY')]
+                    buy_picks = [
+                        r for r in recommendations
+                        if r.action_type.value in ('BUY', 'STRONG_BUY')
+                    ]
                     
                     if buy_picks:
                         top_3 = buy_picks[:3]
@@ -1812,8 +1804,9 @@ class PipelineOrchestrator:
                             self.logger.info(
                                 f"  {i}. {rec.stock_code} - "
                                 f"Score: {rec.score:.1f}, "
-                                f"Signal: {rec.signal_type.value}, "
-                                f"Confidence: {rec.confidence*100:.0f}%"
+                                f"Action: {rec.action_type.value}, "
+                                f"Technical Signal: {rec.signal_type.value}, "
+                                f"Signal Agreement: {rec.signal_agreement*100:.0f}%"
                             )
                 else:
                     self.logger.info("No signals generated (filters applied)")

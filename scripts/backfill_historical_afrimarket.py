@@ -15,17 +15,29 @@ import sys
 import argparse
 from datetime import date, datetime, timedelta
 from typing import List, Optional
+from pathlib import Path
 import pandas as pd
-from decimal import Decimal
 
 # Add project root to path
-sys.path.insert(0, '/home/Stock_pipeline')
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.config.database import get_db
 from app.services.data_sources.afrimarket_source import AfrimarketDataSource
 from app.repositories.staging_repository import StagingRepository
 from app.repositories import StockRepository
 from app.utils.logger import get_logger
+
+
+def parse_backfill_date(value: str) -> date:
+    """Parse absolute dates plus TODAY/YESTERDAY aliases used in docs."""
+    normalized = value.strip().upper()
+    if normalized == "TODAY":
+        return date.today()
+    if normalized == "YESTERDAY":
+        return date.today() - timedelta(days=1)
+    return datetime.strptime(value, "%Y-%m-%d").date()
 
 
 class HistoricalBackfill:
@@ -431,8 +443,8 @@ def main():
         stock_codes = None  # Will use first 5 from database
         print("Running in TEST MODE: 1 year, first 5 stocks")
     elif args.start_date and args.end_date:
-        start_date = datetime.strptime(args.start_date, '%Y-%m-%d').date()
-        end_date = datetime.strptime(args.end_date, '%Y-%m-%d').date()
+        start_date = parse_backfill_date(args.start_date)
+        end_date = parse_backfill_date(args.end_date)
         stock_codes = args.stocks.split(',') if args.stocks else None
     elif args.years:
         start_date = date.today() - timedelta(days=365 * args.years)

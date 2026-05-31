@@ -8,6 +8,7 @@ from typing import Optional, List, Dict, Any
 from datetime import date, timedelta
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, desc
+from sqlalchemy.dialects.postgresql import insert
 import pandas as pd
 
 from app.repositories.base import BaseRepository
@@ -249,16 +250,46 @@ class IndicatorRepository(BaseRepository[FactTechnicalIndicator]):
         """
         if not indicator_data:
             return 0
-        
-        instances = [FactTechnicalIndicator(**data) for data in indicator_data]
-        self.bulk_insert(instances)
+
+        normalized_rows: List[Dict[str, Any]] = []
+        for row in indicator_data:
+            mapped = dict(row)
+
+            if 'indicator_date' in mapped and 'calculation_date' not in mapped:
+                mapped['calculation_date'] = mapped.pop('indicator_date')
+
+            key_map = {
+                'rsi': 'rsi_14',
+                'macd_line': 'macd',
+                'bb_upper': 'bollinger_upper',
+                'bb_middle': 'bollinger_middle',
+                'bb_lower': 'bollinger_lower',
+            }
+            for old_key, new_key in key_map.items():
+                if old_key in mapped and new_key not in mapped:
+                    mapped[new_key] = mapped.pop(old_key)
+
+            normalized_rows.append(mapped)
+
+        stmt = insert(FactTechnicalIndicator).values(normalized_rows)
+        updatable_columns = {
+            column.name: getattr(stmt.excluded, column.name)
+            for column in FactTechnicalIndicator.__table__.columns
+            if column.name not in {'indicator_id', 'created_at'}
+        }
+        stmt = stmt.on_conflict_do_update(
+            index_elements=['stock_id', 'calculation_date'],
+            set_=updatable_columns,
+        )
+
+        self.session.execute(stmt)
         
         self.logger.info(
-            f"Bulk saved {len(instances)} indicator records",
-            extra={"count": len(instances)}
+            f"Bulk upserted {len(normalized_rows)} indicator records",
+            extra={"count": len(normalized_rows)}
         )
         
-        return len(instances)
+        return len(normalized_rows)
     
     def get_ma_crossovers(
         self,

@@ -2,8 +2,10 @@
 """
 Stock Pipeline CLI
 
-Command-line interface for Nigerian Stock Exchange data pipeline.
-Provides commands for running pipeline, querying data, and generating reports.
+Trimmed command-line interface for the Nigerian stock pipeline.
+
+This CLI is intentionally limited to commands that align with the current
+Airflow-first architecture and the close-price-centric schema.
 """
 
 import sys
@@ -13,33 +15,57 @@ from typing import Optional, List
 
 import click
 from tabulate import tabulate
+from sqlalchemy import func
 
 # Add app to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from app.config.settings import Settings
 from app.config.database import get_session
+from app.models import FactDailyPrice, FactTechnicalIndicator
 from app.pipelines.orchestrator import PipelineOrchestrator, PipelineConfig
 from app.repositories import (
     StockRepository, 
     PriceRepository, 
-    IndicatorRepository,
     AlertRepository,
     RecommendationRepository
 )
-from app.services.advisory import StockScreener
 from app.utils import get_logger
 
 logger = get_logger("cli")
+
+
+def _get_latest_market_date(db) -> Optional[date]:
+    """Return the latest stored daily price date across all stocks."""
+    return db.query(func.max(FactDailyPrice.price_date)).scalar()
+
+
+def _get_prices_for_date(db, price_date: date) -> List[FactDailyPrice]:
+    """Return all price rows for a specific trading date."""
+    return (
+        db.query(FactDailyPrice)
+        .filter(FactDailyPrice.price_date == price_date)
+        .all()
+    )
+
+
+def _get_indicator_count_for_date(db, calculation_date: date) -> int:
+    """Return the count of indicator rows stored for a calculation date."""
+    return (
+        db.query(func.count(FactTechnicalIndicator.indicator_id))
+        .filter(FactTechnicalIndicator.calculation_date == calculation_date)
+        .scalar()
+        or 0
+    )
 
 
 @click.group()
 @click.version_option(version="1.0.0")
 def cli():
     """
-    Nigerian Stock Exchange Data Pipeline CLI
-    
-    Manage stock data ingestion, analysis, alerts, and recommendations.
+    Nigerian stock pipeline CLI.
+
+    Use this for pipeline runs and a small set of aligned inspection commands.
+    Airflow remains the primary operational surface.
     """
     pass
 
@@ -127,8 +153,6 @@ def status():
     
     db = get_session()
     stock_repo = StockRepository(db)
-    price_repo = PriceRepository(db)
-    indicator_repo = IndicatorRepository(db)
     alert_repo = AlertRepository(db)
     rec_repo = RecommendationRepository(db)
     
@@ -137,8 +161,7 @@ def status():
     total_stocks = len(active_stocks)
     
     # Get latest date with data
-    latest_prices = price_repo.get_latest_prices(limit=1)
-    latest_date = latest_prices[0].price_date if latest_prices else None
+    latest_date = _get_latest_market_date(db)
     
     click.echo("📊 DATABASE STATUS")
     click.echo("=" * 80)
@@ -147,8 +170,8 @@ def status():
     
     if latest_date:
         # Stats for latest date
-        prices_count = len(price_repo.get_prices_by_date(latest_date))
-        indicators_count = indicator_repo.count_indicators_by_date(latest_date)
+        prices_count = len(_get_prices_for_date(db, latest_date))
+        indicators_count = _get_indicator_count_for_date(db, latest_date)
         
         click.echo(f"  Prices (latest): {prices_count}")
         click.echo(f"  Indicators (latest): {indicators_count}")
@@ -157,9 +180,9 @@ def status():
         week_ago = latest_date - timedelta(days=7)
         recent_alerts = alert_repo.get_alerts_by_date_range(week_ago, latest_date)
         click.echo(f"  Alerts (7 days): {len(recent_alerts)}")
-        
+
         # Recent recommendations
-        recent_recs = rec_repo.get_recent_recommendations(days=7)
+        recent_recs = rec_repo.get_recommendations_by_date_range(week_ago, latest_date)
         click.echo(f"  Recommendations (7 days): {len(recent_recs)}")
     
     click.echo("\n✅ System operational")
@@ -186,15 +209,22 @@ def list(sector: Optional[str], exchange: str, active_only: bool, limit: int):
     stock_repo = StockRepository(db)
     
     if sector:
-        stocks_list = stock_repo.get_stocks_by_sector(sector)
+        stocks_list = stock_repo.get_by_sector(sector)
+        if exchange:
+            stocks_list = [s for s in stocks_list if s.exchange == exchange.upper()]
     else:
-        stocks_list = stock_repo.get_all_stocks()
+        if active_only:
+            stocks_list = stock_repo.get_all_active(exchange=exchange)
+        elif exchange:
+            stocks_list = stock_repo.get_by_exchange(exchange)
+        else:
+            stocks_list = stock_repo.get_all()
     
     if active_only:
         stocks_list = [s for s in stocks_list if s.is_active]
     
     if exchange:
-        stocks_list = [s for s in stocks_list if s.exchange == exchange]
+        stocks_list = [s for s in stocks_list if s.exchange == exchange.upper()]
     
     stocks_list = stocks_list[:limit]
     
@@ -229,7 +259,7 @@ def info(stock_code: str):
     stock_repo = StockRepository(db)
     price_repo = PriceRepository(db)
     
-    stock = stock_repo.get_stock_by_code(stock_code.upper())
+    stock = stock_repo.get_by_code(stock_code.upper())
     
     if not stock:
         click.echo(f"❌ Stock '{stock_code}' not found")
@@ -245,13 +275,15 @@ def info(stock_code: str):
         click.echo(f"Listed: {stock.listing_date}")
     
     # Latest price
-    latest_prices = price_repo.get_latest_prices_for_stock(stock.stock_id, limit=1)
-    if latest_prices:
-        latest = latest_prices[0]
+    latest = price_repo.get_latest_trusted_price(stock.stock_id)
+    if latest:
         click.echo(f"\n💰 Latest Price ({latest.price_date}):")
         click.echo(f"  Close: ₦{latest.close_price:,.2f}")
-        click.echo(f"  Change: {latest.price_change:+.2f} ({latest.price_change_percent:+.2f}%)")
-        click.echo(f"  Volume: {latest.volume:,}")
+        change_pct = float(latest.change_1d_pct) if latest.change_1d_pct is not None else None
+        if change_pct is not None:
+            click.echo(f"  Change (1d): {change_pct:+.2f}%")
+        click.echo(f"  Volume: {latest.volume:,}" if latest.volume is not None else "  Volume: N/A")
+        click.echo(f"  Status: {latest.bar_status} | Quality: {latest.data_quality_flag}")
 
 
 # ============================================================================
@@ -273,7 +305,7 @@ def history(stock_code: str, days: int):
     stock_repo = StockRepository(db)
     price_repo = PriceRepository(db)
     
-    stock = stock_repo.get_stock_by_code(stock_code.upper())
+    stock = stock_repo.get_by_code(stock_code.upper())
     if not stock:
         click.echo(f"❌ Stock '{stock_code}' not found")
         sys.exit(1)
@@ -281,7 +313,7 @@ def history(stock_code: str, days: int):
     end_date = date.today()
     start_date = end_date - timedelta(days=days)
     
-    prices_list = price_repo.get_prices_for_stock_date_range(
+    prices_list = price_repo.get_price_history(
         stock.stock_id,
         start_date,
         end_date
@@ -295,10 +327,10 @@ def history(stock_code: str, days: int):
         [
             p.price_date.strftime('%Y-%m-%d'),
             f"₦{p.close_price:,.2f}",
-            f"{p.price_change_percent:+.2f}%",
-            f"{p.volume:,}",
-            f"₦{p.high_price:,.2f}",
-            f"₦{p.low_price:,.2f}"
+            f"{float(p.change_1d_pct):+.2f}%" if p.change_1d_pct is not None else "N/A",
+            f"{p.volume:,}" if p.volume is not None else "N/A",
+            p.bar_status,
+            p.data_quality_flag,
         ]
         for p in reversed(prices_list[-20:])  # Last 20 days
     ]
@@ -306,7 +338,7 @@ def history(stock_code: str, days: int):
     click.echo(f"\n💹 {stock.company_name} ({stock_code}) - Last {min(len(prices_list), 20)} days\n")
     click.echo(tabulate(
         table_data,
-        headers=['Date', 'Close', 'Change %', 'Volume', 'High', 'Low'],
+        headers=['Date', 'Close', 'Change %', 'Volume', 'Status', 'Quality'],
         tablefmt='grid'
     ))
 
@@ -322,7 +354,7 @@ def recommendations():
 
 
 @recommendations.command()
-@click.option('--signal', type=click.Choice(['STRONG_BUY', 'BUY', 'HOLD', 'SELL', 'STRONG_SELL']), help='Filter by signal')
+@click.option('--signal', type=click.Choice(['STRONG_BUY', 'BUY', 'HOLD', 'AVOID', 'STRONGLY_AVOID']), help='Filter by action')
 @click.option('--min-score', type=float, help='Minimum score (0-100)')
 @click.option('--days', default=7, type=int, help='Days lookback')
 @click.option('--limit', default=20, type=int, help='Max results')
@@ -331,13 +363,15 @@ def list(signal: Optional[str], min_score: Optional[float], days: int, limit: in
     db = get_session()
     rec_repo = RecommendationRepository(db)
     
-    recs = rec_repo.get_recent_recommendations(days=days, limit=limit * 2)
+    end_date = _get_latest_market_date(db) or date.today()
+    start_date = end_date - timedelta(days=days)
+    recs = rec_repo.get_recommendations_by_date_range(start_date, end_date)
     
     # Filter
     if signal:
-        recs = [r for r in recs if r.signal_type == signal]
+        recs = [r for r in recs if r.action_type == signal]
     if min_score:
-        recs = [r for r in recs if float(r.overall_score) >= min_score]
+        recs = [r for r in recs if float(r.heuristic_score) >= min_score]
     
     recs = recs[:limit]
     
@@ -349,13 +383,14 @@ def list(signal: Optional[str], min_score: Optional[float], days: int, limit: in
         [
             r.stock.stock_code,
             r.recommendation_date.strftime('%Y-%m-%d'),
-            r.signal_type,
-            f"{float(r.overall_score):.1f}",
-            r.score_category,
+            r.action_type,
+            r.technical_signal_type,
+            f"{float(r.heuristic_score):.1f}",
+            r.heuristic_score_category,
             f"₦{float(r.current_price):,.2f}",
-            f"₦{float(r.target_price):,.2f}" if r.target_price else 'N/A',
-            f"{float(r.potential_return_pct):+.1f}%" if r.potential_return_pct else 'N/A',
-            r.risk_level
+            f"₦{float(r.policy_target_price):,.2f}" if r.policy_target_price else 'N/A',
+            f"{float(r.policy_upside_pct):+.1f}%" if r.policy_upside_pct else 'N/A',
+            r.heuristic_risk_level
         ]
         for r in recs
     ]
@@ -363,7 +398,7 @@ def list(signal: Optional[str], min_score: Optional[float], days: int, limit: in
     click.echo(f"\n🎯 INVESTMENT RECOMMENDATIONS ({len(recs)} results)\n")
     click.echo(tabulate(
         table_data,
-        headers=['Stock', 'Date', 'Signal', 'Score', 'Category', 'Price', 'Target', 'Return', 'Risk'],
+        headers=['Stock', 'Date', 'Action', 'Tech Signal', 'Score', 'Category', 'Price', 'Target', 'Upside', 'Risk'],
         tablefmt='grid'
     ))
 
@@ -375,8 +410,17 @@ def top(signal: str, limit: int):
     """Show top investment picks."""
     db = get_session()
     rec_repo = RecommendationRepository(db)
+    recommendation_date = _get_latest_market_date(db)
+
+    if recommendation_date is None:
+        click.echo("No recommendation data available.")
+        return
     
-    top_picks = rec_repo.get_top_picks(signal_type=signal, limit=limit)
+    top_picks = rec_repo.get_top_picks(
+        recommendation_date=recommendation_date,
+        signal_type=signal,
+        top_n=limit,
+    )
     
     if not top_picks:
         click.echo(f"No {signal} recommendations found.")
@@ -386,22 +430,35 @@ def top(signal: str, limit: int):
     
     for i, rec in enumerate(top_picks, 1):
         click.echo(f"{i}. {rec.stock.company_name} ({rec.stock.stock_code})")
-        click.echo(f"   Signal: {rec.signal_type} | Score: {float(rec.overall_score):.1f}/100 ({rec.score_category})")
-        click.echo(f"   Current: ₦{float(rec.current_price):,.2f} → Target: ₦{float(rec.target_price):,.2f}" if rec.target_price else f"   Current: ₦{float(rec.current_price):,.2f}")
-        if rec.potential_return_pct:
-            click.echo(f"   Potential Return: {float(rec.potential_return_pct):+.1f}% | Risk: {rec.risk_level}")
-        click.echo(f"   Reason: {rec.recommendation_reason[:100]}...")
+        click.echo(
+            f"   Action: {rec.action_type} | Technical: {rec.technical_signal_type} | "
+            f"Score: {float(rec.heuristic_score):.1f}/100 ({rec.heuristic_score_category})"
+        )
+        click.echo(
+            f"   Current: ₦{float(rec.current_price):,.2f} → Target: ₦{float(rec.policy_target_price):,.2f}"
+            if rec.policy_target_price
+            else f"   Current: ₦{float(rec.current_price):,.2f}"
+        )
+        if rec.policy_upside_pct:
+            click.echo(
+                f"   Policy Upside: {float(rec.policy_upside_pct):+.1f}% | "
+                f"Risk: {rec.heuristic_risk_level}"
+            )
+        reason = (rec.reasons or [""])[0]
+        click.echo(f"   Reason: {reason[:100]}...")
         click.echo()
 
 
 @recommendations.command()
 @click.option('--days', default=30, type=int, help='Analysis period')
-def performance():
+def performance(days: int):
     """Show recommendation performance metrics."""
     db = get_session()
     rec_repo = RecommendationRepository(db)
     
-    stats = rec_repo.get_performance_stats(days=days)
+    end_date = _get_latest_market_date(db) or date.today()
+    start_date = end_date - timedelta(days=days)
+    stats = rec_repo.get_performance_stats(start_date=start_date, end_date=end_date)
     
     if not stats:
         click.echo("No performance data available.")
@@ -410,13 +467,16 @@ def performance():
     click.echo(f"\n📊 RECOMMENDATION PERFORMANCE (Last {days} days)\n")
     click.echo("=" * 80)
     
-    for stat in stats:
-        click.echo(f"\n{stat['signal_type']}:")
-        click.echo(f"  Total: {stat['total']}")
-        click.echo(f"  Avg Score: {stat['avg_score']:.1f}")
-        if stat['avg_return'] is not None:
-            click.echo(f"  Avg Return: {stat['avg_return']:+.2f}%")
-        click.echo(f"  Hit Rate: {stat['success_rate']:.1f}%")
+    click.echo(f"  Total Recommendations: {stats['total_recommendations']}")
+    click.echo(f"  Average Return: {stats['average_return_pct']:+.2f}%")
+    click.echo(f"  Win Rate: {stats['win_rate_pct']:.1f}%")
+    click.echo(f"  Wins: {stats['wins']}")
+    click.echo(f"  Losses: {stats['losses']}")
+
+    if stats['outcomes']:
+        click.echo("\n  Outcomes:")
+        for outcome, count in sorted(stats['outcomes'].items()):
+            click.echo(f"    {outcome}: {count}")
 
 
 # ============================================================================
@@ -484,20 +544,21 @@ def reports():
 
 @reports.command()
 @click.option('--output', default='reports/daily_summary.txt', help='Output file')
-def daily():
+def daily(output: str):
     """Generate daily summary report."""
     db = get_session()
-    stock_repo = StockRepository(db)
-    price_repo = PriceRepository(db)
     rec_repo = RecommendationRepository(db)
     alert_repo = AlertRepository(db)
     
-    today = date.today()
+    report_date = _get_latest_market_date(db)
+    if report_date is None:
+        click.echo("No price data available for report generation.")
+        return
     
     # Get data
-    latest_prices = price_repo.get_prices_by_date(today)
-    today_alerts = alert_repo.get_alerts_by_date_range(today, today)
-    today_recs = rec_repo.get_recommendations_by_date(today)
+    latest_prices = _get_prices_for_date(db, report_date)
+    today_alerts = alert_repo.get_alerts_by_date_range(report_date, report_date)
+    today_recs = rec_repo.get_recommendations_by_date(report_date)
     
     # Generate report
     report_lines = [
@@ -505,7 +566,7 @@ def daily():
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "=" * 80,
         "",
-        f"📊 MARKET OVERVIEW - {today}",
+        f"📊 MARKET OVERVIEW - {report_date}",
         "-" * 80,
         f"Stocks with Price Updates: {len(latest_prices)}",
         f"Active Alerts: {len(today_alerts)}",
@@ -515,15 +576,19 @@ def daily():
     
     # Top movers
     if latest_prices:
-        gainers = sorted(latest_prices, key=lambda p: p.price_change_percent, reverse=True)[:5]
-        losers = sorted(latest_prices, key=lambda p: p.price_change_percent)[:5]
+        priced_with_change = [p for p in latest_prices if p.change_1d_pct is not None]
+        gainers = sorted(priced_with_change, key=lambda p: p.change_1d_pct, reverse=True)[:5]
+        losers = sorted(priced_with_change, key=lambda p: p.change_1d_pct)[:5]
         
         report_lines.extend([
             "📈 TOP GAINERS",
             "-" * 80,
         ])
         for p in gainers:
-            report_lines.append(f"{p.stock.stock_code:10} ₦{float(p.close_price):>10,.2f}  {float(p.price_change_percent):+6.2f}%")
+            stock_code = p.stock.stock_code if p.stock else "N/A"
+            report_lines.append(
+                f"{stock_code:10} ₦{float(p.close_price):>10,.2f}  {float(p.change_1d_pct):+6.2f}%"
+            )
         
         report_lines.extend([
             "",
@@ -531,11 +596,14 @@ def daily():
             "-" * 80,
         ])
         for p in losers:
-            report_lines.append(f"{p.stock.stock_code:10} ₦{float(p.close_price):>10,.2f}  {float(p.price_change_percent):+6.2f}%")
+            stock_code = p.stock.stock_code if p.stock else "N/A"
+            report_lines.append(
+                f"{stock_code:10} ₦{float(p.close_price):>10,.2f}  {float(p.change_1d_pct):+6.2f}%"
+            )
     
     # Recommendations
     if today_recs:
-        buy_recs = [r for r in today_recs if r.signal_type in ['STRONG_BUY', 'BUY']]
+        buy_recs = [r for r in today_recs if r.action_type in ['STRONG_BUY', 'BUY']]
         if buy_recs:
             report_lines.extend([
                 "",
@@ -543,7 +611,7 @@ def daily():
                 "-" * 80,
             ])
             for r in buy_recs[:10]:
-                report_lines.append(f"{r.stock.stock_code:10} {r.signal_type:12} Score: {float(r.overall_score):5.1f}/100")
+                report_lines.append(f"{r.stock.stock_code:10} {r.action_type:12} Score: {float(r.heuristic_score):5.1f}/100")
     
     # Write report
     output_path = Path(output)

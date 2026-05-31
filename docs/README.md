@@ -1,6 +1,8 @@
 # Documentation Map
 
-This docs set has been refactored to match the current codebase state as of 2026-04-06.
+This docs set has been reset to match the current codebase state as of
+2026-05-31, after the DAG schedule, schema, idempotency, historical-indicator,
+recommendation-model, and dashboard-view correction work.
 
 ## Core Documents
 
@@ -19,31 +21,56 @@ This docs set has been refactored to match the current codebase state as of 2026
 - [4. User Guide](./4_USER_GUIDE.md)
   How to run the system today, what to trust, and what is still in transition.
 
-## Redesign Documents
+## Current Design References
 
 - [Architecture Redesign Proposal](./ARCHITECTURE_REDESIGN_PROPOSAL.md)
-  Target architecture for the next major phase.
+  Historical proposal and future architecture reference. It is no longer the
+  current implementation authority.
 
 - [Schema Transition Map](./SCHEMA_TRANSITION_MAP.md)
-  Exact mapping from the current schema to the proposed target schema.
+  Historical transition map. Most core schema transition work has now been
+  implemented.
 
 - [Pipeline Corrections Todo](./PIPELINE_CORRECTIONS_TODO.md)
-  Verified implementation gaps and corrective work items.
+  Historical correction record. Most listed defects have been resolved or
+  superseded.
+
+## ADRs
+
+- [ADR-001: Current Canonical Architecture and Supported Interfaces](./adr/ADR-001-current-canonical-architecture-and-supported-interfaces.md)
+  Establishes the current architectural source of truth for the repo during cleanup and refactor.
+- [ADR-002: Canonical Daily Price Schema](./adr/ADR-002-canonical-daily-price-schema.md)
+  Defines the current production truth for daily price records as a close-price-centric schema.
+- [ADR-003: Current Data Source Strategy](./adr/ADR-003-current-data-source-strategy.md)
+  Defines Afrimarket as the only supported current live market-data source and clarifies staging's role.
 
 ## Planning
 
 - [Planned Features](./PLANNED_FEATURES.md)
   Future roadmap items that are intentionally not part of the current implementation.
 
+## Reviews
+
+- [Project Review - 2026-05-25](./PROJECT_REVIEW_2026-05-25.md)
+  Full repository review covering code, tests, docs, operations, and ADR/governance gaps.
+- [Cleanup Plan](./CLEANUP_PLAN.md)
+  Cleanup completion record and archive candidate.
+- [Model Redesign Backlog](./MODEL_REDESIGN_BACKLOG.md)
+  Model redesign reconciliation and current validation backlog.
+
 ## Important Note
 
 Earlier docs in this repository overstated parts of the implementation.
 
-This refactored set now reflects the live code more accurately, including:
+The current docs now treat the live code, migrations, and Airflow DAGs as the
+source of truth, including:
 
 - the current table set
 - the current Airflow/Docker setup
 - the current indicator set
 - the current recommendation profiles
 - the fact that the project is currently single-source in normal operation
-- the fact that the CLI is partially in transition
+- the fact that the CLI is intentionally trimmed to aligned commands
+- the current dashboard semantic views
+- the current distinction between daily recommendations and weekly backtest
+  artifacts

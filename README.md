@@ -4,7 +4,8 @@ Daily NGX market-data pipeline with staging, reconciliation, indicators, alerts,
 
 ## Current State
 
-This repository is in active refactor.
+This repository is in active cleanup and validation after a major schema and
+recommendation-model correction pass.
 
 What the codebase currently does:
 
@@ -16,13 +17,16 @@ What the codebase currently does:
 - evaluates alert rules
 - generates profile-based recommendations
 - supports historical backfill from Afrimarket history into staging
+- supports historical indicator backfill from trusted stored price history
+- exposes dashboard-ready semantic views for recommendations, model health,
+  backtests, and data quality
 
-What it does not currently do well enough yet:
+What still needs validation or future source expansion:
 
 - broad multi-source reconciliation
 - robust fundamentals-driven investing
-- investment-grade confidence calibration
-- fully trustworthy CLI coverage across all commands
+- evidence-based threshold calibration on refreshed historical data
+- official NGX document, corporate-action, and fundamentals ingestion
 
 ## Data Reality
 
@@ -34,7 +38,7 @@ The current live source mix is constrained by NGX data availability:
 
 Because of that, the project should currently be treated as:
 
-- a market-data and screening platform under active redesign
+- a market-data and screening platform in validation and dashboard-prep mode
 - not a fully validated automated investing engine
 
 ## Current Architecture
@@ -46,6 +50,7 @@ Afrimarket current quotes
     -> fact_daily_prices
     -> fact_technical_indicators
     -> alert_history / fact_recommendations
+    -> dashboard semantic views
 ```
 
 Core tables in the current code:
@@ -75,7 +80,9 @@ The live indicator model stores:
 - `bollinger_middle`
 - `bollinger_lower`
 - `volatility_30`
+- `atr_14`
 - `ma_crossover_signal`
+- `trend_strength`
 
 ## Current Recommendation Profile
 
@@ -90,14 +97,15 @@ This profile biases the model toward stable 10-day momentum and moderate volatil
 The current codebase still has important gaps:
 
 - the pipeline is operationally single-source even though staging supports reconciliation
-- `fact_daily_prices` still needs stronger trust/status semantics for investment use
 - historical data quality varies by field
-- some docs previously described older schemas and indicators
-- parts of `app/cli.py` still reference older repository APIs and should be treated as in transition
+- source trust is constrained until official NGX or paid-source validation is added
+- recommendation thresholds still need calibration against refreshed historical outcomes
+- current recommendations are screening candidates, not autonomous trade instructions
 
 See:
 
-- [Pipeline Corrections Todo](./docs/PIPELINE_CORRECTIONS_TODO.md)
+- [Model Redesign Backlog](./docs/MODEL_REDESIGN_BACKLOG.md)
+- [Cleanup Plan](./docs/CLEANUP_PLAN.md)
 - [Architecture Redesign Proposal](./docs/ARCHITECTURE_REDESIGN_PROPOSAL.md)
 - [Schema Transition Map](./docs/SCHEMA_TRANSITION_MAP.md)
 
@@ -127,8 +135,9 @@ Current DAGs:
 
 The daily pipeline DAG is defined with:
 
-- schedule: `0 14 * * *`
-- timezone intent: 3:00 PM WAT / 2:00 PM UTC
+- schedule: `0 17 * * 1-5`
+- timezone intent: 5:00 PM Africa/Lagos, Monday-Friday
+- follow-up: triggers `daily_steady_snapshot` after successful completion
 - `is_paused_upon_creation=True`
 
 ### Historical Backfill
@@ -140,17 +149,25 @@ docker compose exec airflow-scheduler airflow dags trigger backfill_historical_d
   --conf '{"years": 5}'
 ```
 
+Price backfill loads historical Afrimarket price observations into staging and
+then through the main promotion path. Indicator history is backfilled separately
+from trusted `fact_daily_prices` rows with:
+
+```bash
+python scripts/backfill_historical_indicators.py
+```
+
 ## Recommended Usage Right Now
 
 Prefer:
 
 - Airflow DAG execution for the main workflow
 - historical backfill script/DAG for data accumulation
+- historical indicator backfill after large price reloads
 - direct inspection of PostgreSQL tables and logs
 
-Use caution with:
-
-- older CLI commands that may still reference pre-refactor repository methods
+Use the CLI as a trimmed companion surface for aligned pipeline runs and
+read-only inspection. Airflow remains the primary operational control plane.
 
 ## Documentation
 
@@ -176,6 +193,8 @@ docker compose exec -T airflow-webserver sh -lc "python /Stock_pipeline/scripts/
 
 Then open Metabase and connect it to the `stock_pipeline` database to visualize:
 
+- dashboard semantic views such as `vw_daily_recommendation_board`,
+  `vw_model_health`, `vw_backtest_equity_curve`, and `vw_data_quality_monitor`
 - `backtest_runs`
 - `backtest_trades`
 - `recommendation_snapshots`
@@ -190,11 +209,11 @@ python scripts/generate_metabase_seed.py
 
 ## Next Direction
 
-The current redesign path is:
+The current next direction is:
 
-1. keep the existing dimension, staging, indicator, alert, and recommendation concepts
-2. make `staging_daily_prices` truly source-agnostic
-3. make `fact_daily_prices` the single canonical daily-price table with clearer trust metadata
-4. tighten indicator and recommendation inputs around trusted production rows
-5. separate short-term and long-term strategy outputs
-6. bring official NGX documents into the ingestion model when a real source is available
+1. validate the refreshed historical dataset and model behavior
+2. calibrate score and probability thresholds from real backtest results
+3. polish dashboard semantic views for finance-style reporting
+4. keep documentation aligned with the implemented schema and DAGs
+5. bring official NGX documents, corporate actions, and fundamentals into the
+   ingestion model when real sources are available

@@ -122,22 +122,42 @@ Purpose:
 
 Key fields:
 
-- `signal_type`
-- `confidence_score`
-- `overall_score`
-- `score_category`
+- `action_type`
+- `technical_signal_type`
+- `signal_agreement`
+- `predicted_probability_10d_up`
+- `heuristic_score`
+- `heuristic_score_category`
 - `current_price`
-- `target_price`
-- `stop_loss`
-- `risk_level`
-- `recommendation_reason`
+- `policy_target_price`
+- `policy_stop_loss`
+- `policy_upside_pct`
+- `policy_downside_pct`
+- `risk_reward_ratio`
+- `heuristic_risk_level`
+- `reasons`
 - `technical_score`
 - `momentum_score`
 - `volatility_score`
 - `trend_score`
 - `volume_score`
+- `rsi_14`
+- `macd`
+- `model_version`
+- `is_active`
 - `outcome`
+- `outcome_date`
 - `actual_return_pct`
+
+Important semantic split:
+
+- `action_type` is the long-only user-facing action: `STRONG_BUY`, `BUY`,
+  `HOLD`, `AVOID`, or `STRONGLY_AVOID`
+- `technical_signal_type` preserves the underlying technical signal:
+  `STRONG_BUY`, `BUY`, `HOLD`, `SELL`, or `STRONG_SELL`
+- `signal_agreement` is heuristic signal agreement, not predictive probability
+- `predicted_probability_10d_up` is the model-estimated probability of a
+  positive 10-trading-day move when enough history is available
 
 ### Alert Tables
 
@@ -182,13 +202,8 @@ Current fields:
 
 Important note:
 
-`staging_daily_prices` is being generalized in-place so it can support multiple
-real sources later instead of being structurally tied to Afrimarket.
-
-Important note:
-
-The current redesign removes single-source enforcement from the staging model,
-but the live pipeline still operates with Afrimarket as its only normal source.
+`staging_daily_prices` remains intentionally source-aware so future multi-source
+expansion is possible, but the current normal ingestion path is Afrimarket-only.
 
 #### `staging_audit_log`
 
@@ -221,10 +236,16 @@ Implemented through:
 
 - `scripts/backfill_historical_afrimarket.py`
 - `backfill_historical_data` DAG
+- `scripts/backfill_historical_indicators.py`
 
 Purpose:
 
 - load longer close-price history into staging
+- recompute historical indicators from trusted promoted price facts
+
+The price backfill and indicator backfill are intentionally separate. Price
+history is loaded and promoted first; indicators are then upserted from
+`fact_daily_prices` so reruns remain idempotent.
 
 ## Current Service Layer
 
@@ -236,6 +257,7 @@ Current behavior:
 
 - current fetch includes `stock_code`, `company_name`, `exchange`, `price_date`, `close_price`, `volume`, `change_1d_pct`
 - historical fetch returns mainly `price_date` and `close_price`
+- no NGX-specific source adapter is part of the current supported runtime path
 
 ### Processors
 
@@ -252,26 +274,67 @@ Current behavior:
 - `RecommendationBacktester`
 - steady profile: `steady_20p_10d`
 
+The current recommendation model separates:
+
+- long-only action semantics from technical sell/avoid signals
+- heuristic score from signal agreement
+- signal agreement from predicted 10-day probability
+- policy target and stop outputs from model forecasts
+
+Model dataset building and backtesting include an outlier guard by default:
+
+- anchor-day and forward-return model rows above 50 percent absolute return are
+  excluded from model datasets
+- backtest trade windows above 50 percent absolute gross return are excluded
+  from accuracy metrics
+
+This guard is intended to remove split-like or bad-data windows from model
+calibration without deleting the underlying price history.
+
+### Dashboard Semantic Layer
+
+The dashboard layer is implemented as database views rather than another
+physical daily recommendation table.
+
+Current semantic views include:
+
+- `vw_market_overview`
+- `vw_stock_price_panel`
+- `vw_recommendation_board`
+- `vw_daily_recommendation_board`
+- `vw_sector_performance`
+- `vw_model_health`
+- `vw_backtest_equity_curve`
+- `vw_data_quality_monitor`
+
+Raw weekly backtest artifacts remain in:
+
+- `backtest_runs`
+- `backtest_trades`
+- `recommendation_snapshots`
+- `decision_signals`
+
 ## Known Architectural Gaps
 
 The biggest current architectural issues are:
 
 - single-source dependence in practice
-- mixed source and canonical responsibilities in `fact_daily_prices`
-- recommendations still depend mainly on technical heuristics
-- some docs and CLI paths were previously ahead of the implementation
+- official NGX documents, corporate actions, and fundamentals are not ingested yet
+- recommendation thresholds still need evidence-based validation
+- dashboard presentation still needs product-level design polish
+- the orchestrator remains large and should eventually be split into clearer stage services
 
 ## Why The Schema Is Being Redesigned
 
 The redesign is not starting from zero.
 
-It is based on the existing model set:
+It was based on the existing model set:
 
 - keep the dimension tables
 - keep the staging and audit concept
 - keep indicators, alerts, and recommendations
-- redesign `fact_daily_prices` in place as the one canonical production price table
-- add stronger trust and promotion metadata to existing rows
+- `fact_daily_prices` has been redesigned in place as the one canonical production price table
+- trust and promotion metadata have been added to existing rows
 - later add corporate actions and fundamental snapshots
 
 See:

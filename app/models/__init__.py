@@ -9,7 +9,6 @@ from app.models.analytics import (
     BacktestRun,
     BacktestTrade,
     RecommendationSnapshot,
-    DailyRecommendationSnapshot,
     DecisionSignal,
 )
 
@@ -29,6 +28,5 @@ __all__ = [
     "BacktestRun",
     "BacktestTrade",
     "RecommendationSnapshot",
-    "DailyRecommendationSnapshot",
     "DecisionSignal",
 ]

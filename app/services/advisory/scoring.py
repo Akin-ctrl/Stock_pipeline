@@ -25,8 +25,8 @@ class StockScore:
     Comprehensive stock score.
     
     Attributes:
-        total_score: Overall score (0-100)
-        category: Score category
+        total_score: Overall heuristic score (0-100)
+        category: Heuristic score category
         technical_score: Technical analysis score (0-100)
         momentum_score: Momentum score (0-100)
         volatility_score: Volatility/risk score (0-100)
@@ -42,6 +42,16 @@ class StockScore:
     trend_score: float
     volume_score: float
     breakdown: Dict[str, float]
+
+    @property
+    def heuristic_score(self) -> float:
+        """Explicit alias for the handcrafted heuristic score."""
+        return self.total_score
+
+    @property
+    def heuristic_score_category(self) -> ScoreCategory:
+        """Explicit alias for the handcrafted heuristic score category."""
+        return self.category
 
 
 class StockScorer:
