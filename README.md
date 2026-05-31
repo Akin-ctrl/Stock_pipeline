@@ -16,7 +16,7 @@ The pipeline runs automatically every weekday at 5:00 PM Africa/Lagos time. From
 6. Generates profile-based screening recommendations with risk/reward metadata
 7. Refreshes dashboard-ready semantic views for BI reporting
 
-Historical price data can be backfilled up to 5 years via a dedicated DAG. Technical indicators are backfilled separately from trusted production price rows, keeping reruns idempotent.
+Historical price data can be backfilled via a dedicated DAG. Technical indicators are backfilled separately from trusted production price rows, keeping reruns idempotent.
 
 ---
 
