@@ -58,7 +58,7 @@ class TestDataTransformer:
             'volume': [1000000, 500000, None]
         })
         
-        transformed = transformer.transform(raw_data, source='ngx')
+        transformed = transformer.transform(raw_data, source='afrimarket')
         
         # Should fill missing volume with 0
         assert transformed['volume'].notna().all()

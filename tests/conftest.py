@@ -162,16 +162,25 @@ def sample_prices(db_session: Session, sample_stocks):
             # Simple price generation (trending up slightly)
             base_price = Decimal("100.00")
             daily_price = base_price + Decimal(str(i * 0.5))
+            close_price = daily_price + Decimal("0.50")
+            change_1d_pct = None
+            if i > 0:
+                previous_close = base_price + Decimal(str((i - 1) * 0.5)) + Decimal("0.50")
+                change_1d_pct = ((close_price - previous_close) / previous_close) * Decimal("100")
             
             price = FactDailyPrice(
                 stock_id=stock.stock_id,
                 price_date=price_date,
-                open_price=daily_price,
-                high_price=daily_price + Decimal("2.00"),
-                low_price=daily_price - Decimal("1.50"),
-                close_price=daily_price + Decimal("0.50"),
+                close_price=close_price,
                 volume=1000000 + (i * 10000),
-                source="TEST"
+                change_1d_pct=change_1d_pct,
+                source="TEST",
+                source_count=1,
+                bar_status="RECONCILED",
+                is_official=False,
+                confidence_score=Decimal("85.00"),
+                data_quality_flag="GOOD",
+                has_complete_data=True,
             )
             prices.append(price)
     
