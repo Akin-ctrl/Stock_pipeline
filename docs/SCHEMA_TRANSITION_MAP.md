@@ -1,16 +1,20 @@
 # Schema Transition Map
 
-This document maps the current schema to the redesign that stays inside the
-existing tables instead of duplicating them.
+Status: Superseded by the current schema implementation as of 2026-05-31.
 
-## Goal
+This document originally mapped the current schema to a redesign that stayed
+inside the existing tables instead of duplicating them. Most of the core
+transition has now been implemented. Keep this file as a historical transition
+record unless the remaining future items are moved into a current backlog.
+
+## Original Goal
 
 The redesign is in-place.
 
 We keep the current schema shape and make the live tables financially safer and
 clearer to use.
 
-## Current To Target Mapping
+## Implemented Schema Decisions
 
 ### Keep As-Is
 
@@ -25,12 +29,17 @@ clearer to use.
 #### `fact_technical_indicators`
 
 - remains the indicator storage table
-- should eventually calculate only from trusted rows in `fact_daily_prices`
+- historical indicator backfill now calculates from trusted rows in
+  `fact_daily_prices`
 
 #### `fact_recommendations`
 
 - remains the recommendation output table
-- should later separate short-term and long-term strategy lineage more clearly
+- now stores model-aligned recommendation fields such as `action_type`,
+  `technical_signal_type`, `signal_agreement`,
+  `predicted_probability_10d_up`, `heuristic_score`, policy outputs, and
+  outcome fields
+- short-term versus long-term strategy lineage remains future work
 
 #### `alert_rules`
 
@@ -52,7 +61,7 @@ Target role:
 
 - remain the single staging table for all incoming market-price observations
 
-Changes:
+Implemented direction:
 
 - remove single-source enforcement
 - preserve better reconciliation lineage
@@ -82,13 +91,29 @@ Target role:
 
 - remain the single canonical production daily-price table
 
-Changes:
+Implemented direction:
 
 - keep one row per stock/date
 - make `source` the selected production source
 - add trust/status metadata directly on the row
 - use `bar_status`, `source_count`, `is_official`, and `confidence_score`
 - retain `data_quality_flag` and `has_complete_data`
+
+### Dashboard Semantic Layer
+
+The current dashboard-facing redesign uses semantic views instead of another
+physical daily recommendation table.
+
+Current views include:
+
+- `vw_market_overview`
+- `vw_stock_price_panel`
+- `vw_recommendation_board`
+- `vw_daily_recommendation_board`
+- `vw_sector_performance`
+- `vw_model_health`
+- `vw_backtest_equity_curve`
+- `vw_data_quality_monitor`
 
 ## Explicit Non-Goal
 
@@ -114,10 +139,10 @@ Those concepts overlap too heavily with the current `staging_daily_prices` and
 | `alert_rules` | Keep | `alert_rules` |
 | `alert_history` | Keep | `alert_history` |
 
-## Migration Priority
+## Remaining Future Work
 
-1. make `staging_daily_prices` source-agnostic
-2. enrich `fact_daily_prices` with trust and promotion metadata
-3. filter indicators and strategy logic by trusted production rows
-4. separate short-term and long-term recommendation behavior more explicitly
-5. add fundamentals and official NGX document ingestion only when a real source is available
+1. continue strengthening source-agnostic staging as additional real sources are added
+2. continue filtering indicators and strategy logic by trusted production rows
+3. separate short-term and long-term recommendation behavior more explicitly
+4. add fundamentals and official NGX document ingestion only when a real source is available
+5. add corporate actions when a reliable source and adjustment policy exist

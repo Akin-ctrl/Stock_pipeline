@@ -9,7 +9,9 @@ Today, it is best understood as:
 - a PostgreSQL-backed NGX data pipeline
 - a staging and reconciliation workflow
 - a technical indicator engine
-- an alert and recommendation engine under active redesign
+- an alert and recommendation engine in validation and calibration mode
+- a dashboard semantic layer for finance-style reporting
+- a trimmed CLI for pipeline runs and aligned read-only inspection
 
 It is not yet a complete investment-grade decision system.
 
@@ -24,8 +26,11 @@ Current end-to-end flow:
 5. calculate indicators into `fact_technical_indicators`
 6. evaluate alert rules
 7. generate recommendations into `fact_recommendations`
+8. expose dashboard-ready semantic views
 
-Historical data can also be backfilled into staging through the dedicated backfill DAG and script.
+Historical price data can also be backfilled into staging through the dedicated
+backfill DAG and script. Historical technical indicators are backfilled
+separately from trusted `fact_daily_prices` rows.
 
 ## Current Source Coverage
 
@@ -65,7 +70,9 @@ Indicators currently stored:
 - `bollinger_middle`
 - `bollinger_lower`
 - `volatility_30`
+- `atr_14`
 - `ma_crossover_signal`
+- `trend_strength`
 
 Recommendation profile currently supported:
 
@@ -83,28 +90,40 @@ Runtime stack in the repository:
 - PgAdmin
 - Metabase
 
+Operational surfaces:
+
+- Airflow for scheduled and manual pipeline execution
+- a trimmed CLI for aligned pipeline runs and inspection
+- direct database inspection for validation
+- Metabase or BI tools through dashboard semantic views
+
 ## Current Airflow Workflows
 
-Scheduled DAG:
+Scheduled DAGs:
 
 - `nigerian_stock_pipeline_v2`
+- `weekly_steady_backtest`
 
-Manual DAG:
+Manual or triggered DAGs:
 
 - `backfill_historical_data`
+- `daily_steady_snapshot`
 
-The daily DAG is scheduled for `0 14 * * *` and starts paused on creation.
+The daily stock pipeline is scheduled for `0 17 * * 1-5`, meaning 5:00 PM
+Africa/Lagos on weekdays. It starts paused on creation and triggers
+`daily_steady_snapshot` after successful completion. The weekly steady backtest
+runs Fridays at 8:00 PM Africa/Lagos.
 
 ## Current Limitations
 
 The most important current limitations are:
 
 - source concentration around Afrimarket
-- `fact_daily_prices` still needs stronger trust metadata for investment use
-- technical indicators computed from limited field coverage
-- recommendations still driven mainly by technical heuristics
+- official NGX documents and corporate actions are not yet ingested
+- full fundamentals are not yet available
+- recommendation thresholds still need calibration from refreshed historical outcomes
 - long-term investing support is not fundamentally grounded yet
-- parts of the CLI still reference older repository/model APIs
+- the CLI is intentionally narrower than older docs implied
 
 ## Recommended Interpretation
 

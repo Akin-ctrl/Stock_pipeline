@@ -13,7 +13,7 @@ Current bad uses:
 
 - fully automated real-money trading
 - long-term investment decisions based purely on the current recommendation engine
-- treating recommendation confidence as true predictive probability
+- treating signal agreement as true predictive probability
 
 ## Main Workflows
 
@@ -32,6 +32,15 @@ This runs:
 - indicators
 - alerts
 - recommendations
+- the chained daily recommendation snapshot verification
+
+There is also a trimmed CLI for the same architecture. It is useful for:
+
+- running the pipeline manually
+- checking current database status
+- inspecting stocks, prices, alerts, and recommendations through the current schema
+
+It should be treated as a small operational helper, not the primary control plane.
 
 ### 2. Backfill Historical Data
 
@@ -40,6 +49,13 @@ Use:
 - `backfill_historical_data`
 
 This is the preferred way to accumulate longer close-price history for indicator and backtest work.
+
+After a large price reload, run historical indicator backfill from trusted
+`fact_daily_prices` rows so technical indicators cover the refreshed history:
+
+```bash
+python scripts/backfill_historical_indicators.py
+```
 
 ### 3. Review Data In PostgreSQL
 
@@ -60,6 +76,17 @@ The system uses a single steady profile:
 
 This profile biases the model toward stable momentum and lower volatility rather than extreme spikes.
 
+The user-facing recommendation action is long-only:
+
+- technical `STRONG_BUY` becomes action `STRONG_BUY`
+- technical `BUY` becomes action `BUY`
+- technical `HOLD` becomes action `HOLD`
+- technical `SELL` becomes action `AVOID`
+- technical `STRONG_SELL` becomes action `STRONGLY_AVOID`
+
+So the system does not present short-selling instructions. It presents buy,
+hold, or avoid-style decisions for manual review.
+
 ## Notifications
 
 The system supports:
@@ -76,8 +103,20 @@ Weekly backtest results and recommendation snapshots are stored in:
 - `backtest_runs`
 - `backtest_trades`
 - `recommendation_snapshots`
-- `daily_recommendation_snapshots`
 - `decision_signals`
+
+Daily recommendations are exposed through `vw_daily_recommendation_board`.
+
+For dashboard work, prefer semantic views first:
+
+- `vw_daily_recommendation_board`
+- `vw_recommendation_board`
+- `vw_model_health`
+- `vw_backtest_equity_curve`
+- `vw_data_quality_monitor`
+- `vw_market_overview`
+- `vw_stock_price_panel`
+- `vw_sector_performance`
 
 To populate the tables once:
 
@@ -113,6 +152,14 @@ Current recommendation inputs include:
 - current price
 - recent volume ratio when volume history is available
 - daily price change when available
+- signal agreement
+- predicted 10-day positive-return probability when enough history is available
+- policy target, stop, upside, downside, and risk-reward outputs
+
+Model validation and backtesting currently exclude split-like or bad-data
+return windows above 50 percent absolute return by default. This protects
+accuracy metrics from extreme data artifacts without deleting the source price
+history.
 
 ## What It Does Not Yet Reliably Incorporate
 
@@ -144,9 +191,11 @@ Recommended daily process:
 
 ## Current User Warning
 
-The project is in the middle of an architecture correction and redesign.
+The project is past the main architecture correction pass and is now in a
+validation, calibration, and dashboard-preparation phase.
 
 That means the safest way to use it right now is:
 
 - as a market-data and screening assistant
 - not as a source of highly accurate investment predictions
+- with Airflow as the primary runtime surface and the CLI as a trimmed companion tool

@@ -6,6 +6,7 @@ The current `docker-compose.yml` defines these services:
 
 - `postgres`
 - `pgadmin`
+- `metabase`
 - `app`
 - `airflow-webserver`
 - `airflow-scheduler`
@@ -16,6 +17,7 @@ The current `docker-compose.yml` defines these services:
 - PostgreSQL: `5433`
 - PgAdmin: `5051`
 - Airflow UI: `8080`
+- Metabase: `3000`
 
 ## Start The Stack
 
@@ -35,15 +37,33 @@ docker compose ps
 
 - `nigerian_stock_pipeline_v2`
 - `backfill_historical_data`
+- `weekly_steady_backtest`
+- `daily_steady_snapshot`
 
 ### Daily Pipeline DAG
 
 Current characteristics from the DAG definition:
 
 - dag id: `nigerian_stock_pipeline_v2`
-- schedule: `0 14 * * *`
+- schedule: `0 17 * * 1-5`
+- timezone intent: 5:00 PM Africa/Lagos, Monday-Friday
 - catchup: disabled
 - paused on creation: true
+- follow-up: triggers `daily_steady_snapshot` after success
+
+### Daily Snapshot DAG
+
+- dag id: `daily_steady_snapshot`
+- schedule: none
+- trigger: started by `nigerian_stock_pipeline_v2` after successful completion
+- purpose: verify daily recommendations are available for dashboard views
+
+### Weekly Backtest DAG
+
+- dag id: `weekly_steady_backtest`
+- schedule: `0 20 * * 5`
+- timezone intent: 8:00 PM Africa/Lagos on Fridays
+- purpose: refresh weekly steady-profile backtest and snapshot artifacts
 
 ### Manual Backfill DAG
 
@@ -90,18 +110,22 @@ For the current codebase, the most reliable operational path is:
 
 - run the pipeline through Airflow
 - use the backfill DAG for historical accumulation
+- run historical indicator backfill after major price reloads
 - inspect database tables directly when validating outputs
+- use dashboard semantic views for BI-style reporting
 
 ## CLI Status
 
-`app/cli.py` exists, but it is currently partially out of sync with parts of the refactored repository/model layer.
+`app/cli.py` exists as a trimmed companion interface aligned to the current
+close-price-centric schema.
 
 That means:
 
-- some commands may still work
-- some commands may reference older repository methods or fields
+- Airflow remains the primary operational surface
+- the CLI is useful for selected pipeline runs and read-only inspection
+- broad CLI-driven operations should not be treated as the control plane
 
-So for now, the docs do not treat the CLI as the primary operational surface.
+So for now, the docs treat the CLI as useful but secondary.
 
 ## Environment Expectations
 
@@ -134,8 +158,13 @@ The repository can still be deployed to a VM or cloud host using Docker Compose,
 3. Airflow scheduler is healthy
 4. `nigerian_stock_pipeline_v2` is present in Airflow
 5. `backfill_historical_data` is present in Airflow
-6. app container can import project code
+6. `daily_steady_snapshot` is present in Airflow
+7. `weekly_steady_backtest` is present in Airflow
+8. app container can import project code
+9. dashboard semantic views exist after migrations are applied
 
 ## Current Caveat
 
-Because the codebase is mid-refactor, deployment success does not guarantee that every downstream recommendation or CLI path is fully trustworthy. Validate outputs at the table and log level.
+Deployment success does not guarantee recommendation accuracy. Validate outputs
+at the table, view, log, and backtest-result level before trusting dashboard
+interpretations.

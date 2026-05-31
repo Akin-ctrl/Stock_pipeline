@@ -2,6 +2,35 @@
 
 Last reviewed: 2026-04-06
 
+Status: Historical proposal / future architecture reference.
+
+This document is no longer the current implementation authority. Several core
+recommendations have since been implemented inside the existing schema, while
+source expansion, official NGX ingestion, fundamentals, and corporate actions
+remain future work.
+
+## What Has Since Been Implemented
+
+- `fact_daily_prices` remains the single canonical daily price fact table.
+- Trust and promotion metadata now live directly on `fact_daily_prices`.
+- `fact_recommendations` now separates long-only user actions from technical
+  sell/avoid signals.
+- Signal agreement and predicted 10-day probability are separate fields.
+- Policy targets, stops, upside/downside, and risk-reward are policy outputs,
+  not claimed forecasts.
+- Walk-forward validation and weekly backtest tooling now exist.
+- Dashboard semantic views now expose recommendation, model-health, backtest,
+  market, sector, and data-quality reporting surfaces.
+
+## What Remains Future Work
+
+- official NGX Daily Official List ingestion
+- corporate filing and corporate-action ingestion
+- fundamentals such as EPS, P/E, dividends, and balance-sheet quality metrics
+- paid or secondary source evaluation
+- deeper short-term versus long-term strategy separation
+- transaction-cost and liquidity modeling suitable for NGX execution
+
 ## Why Redesign
 
 The current system behaves like a technical screener, but it is not structured for:
