@@ -284,11 +284,12 @@ def main() -> None:
             "description": "Top daily steady snapshot",
             "display": "table",
             "query": (
-                "SELECT snapshot_date, stock_code, company_name, signal_type, confidence, score, "
-                "current_price, target_price, stop_loss "
-                "FROM daily_recommendation_snapshots "
-                "WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM daily_recommendation_snapshots) "
-                "ORDER BY score DESC"
+                "SELECT recommendation_date, stock_code, company_name, action_type, "
+                "technical_signal_type, signal_agreement_pct, heuristic_score, "
+                "predicted_probability_10d_up_pct, current_price, policy_target_price, "
+                "policy_stop_loss, policy_upside_pct, risk_reward_ratio "
+                "FROM vw_daily_recommendation_board "
+                "ORDER BY recommendation_rank"
             ),
             "size_x": 12,
             "size_y": 6,
