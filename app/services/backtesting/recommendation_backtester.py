@@ -144,13 +144,20 @@ class RecommendationBacktester:
         round_trip_cost_pct: float = 0.20,
         max_abs_gross_return_pct: Optional[float] = 50.0,
         calculate_probability: bool = True,
+        probability_estimator=None,
         recommendation_filter: Optional[RecommendationFilter] = None,
     ):
         self.session = session
         self.price_repo = PriceRepository(session)
         self.stock_repo = StockRepository(session)
         self.indicator_repo = IndicatorRepository(session)
-        probability_estimator = None if calculate_probability else NullProbabilityEstimator()
+        probability_estimator = (
+            probability_estimator
+            if calculate_probability and probability_estimator is not None
+            else None
+            if calculate_probability
+            else NullProbabilityEstimator()
+        )
         self.screener = StockScreener(
             session,
             strategy_profile=strategy_profile,

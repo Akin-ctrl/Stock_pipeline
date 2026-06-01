@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Mapping, Optional, Protocol
+from typing import Mapping, Optional, Protocol, Sequence
 
 import numpy as np
 
 from app.services.modeling.dataset_builder import (
     ModelingDatasetBuilder,
     ModelingDatasetConfig,
+    ModelingDatasetRow,
 )
 from app.services.modeling.feature_extractor import (
     PROBABILITY_FEATURE_NAMES,
@@ -123,6 +124,7 @@ class HistoricalLogisticProbabilityEstimator:
         iterations: int = 500,
         l2_penalty: float = 0.001,
         dataset_builder: Optional[ModelingDatasetBuilder] = None,
+        preloaded_rows: Optional[Sequence[ModelingDatasetRow]] = None,
     ):
         self.session = session
         self.training_window_days = training_window_days
@@ -135,6 +137,7 @@ class HistoricalLogisticProbabilityEstimator:
             session,
             config=ModelingDatasetConfig(min_confidence_score=60.0),
         )
+        self.preloaded_rows = list(preloaded_rows) if preloaded_rows is not None else None
         self.logger = get_logger("historical_probability_estimator")
         self._model_cache: dict[date, Optional[LogisticProbabilityModel]] = {}
 
@@ -174,10 +177,7 @@ class HistoricalLogisticProbabilityEstimator:
         """Train a logistic baseline using only history available before the recommendation date."""
         training_end = recommendation_date - timedelta(days=1)
         training_start = recommendation_date - timedelta(days=self.training_window_days)
-        rows = self.dataset_builder.build(
-            start_date=training_start,
-            end_date=training_end,
-        )
+        rows = self._training_rows(training_start, training_end)
 
         if len(rows) < self.min_training_rows:
             self.logger.info(
@@ -234,6 +234,29 @@ class HistoricalLogisticProbabilityEstimator:
             },
         )
         return model
+
+    def _training_rows(
+        self,
+        training_start: date,
+        training_end: date,
+    ) -> list[ModelingDatasetRow]:
+        """Return rows matching the normal rolling build window.
+
+        When rows are preloaded, require both the anchor date and horizon date to
+        fall inside the training cutoff. That preserves the no-future-leakage
+        behavior of ``dataset_builder.build(..., end_date=training_end)``.
+        """
+        if self.preloaded_rows is None:
+            return self.dataset_builder.build(
+                start_date=training_start,
+                end_date=training_end,
+            )
+        return [
+            row
+            for row in self.preloaded_rows
+            if training_start <= row.anchor_date <= training_end
+            and row.horizon_date <= training_end
+        ]
 
 
 def _sigmoid(values) -> np.ndarray:

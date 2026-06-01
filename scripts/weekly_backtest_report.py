@@ -5,19 +5,46 @@ Run weekly backtest for the steady profile and persist results for dashboards.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from collections import defaultdict
+from datetime import date, datetime, timedelta
 import argparse
 import logging
+from math import isinf
 from typing import Any, List, Optional
 
 from app.config.database import get_db
-from app.models import Base, BacktestRun, BacktestTrade, RecommendationSnapshot, DecisionSignal
+from sqlalchemy import func
+
+from app.models import (
+    Base,
+    BacktestPortfolioEquityPoint,
+    BacktestPortfolioPosition,
+    BacktestRun,
+    BacktestSectorPerformance,
+    BacktestStockPerformance,
+    BacktestTrade,
+    BacktestYearlyPerformance,
+    DecisionSignal,
+    DimSector,
+    DimStock,
+    FactDailyPrice,
+    RecommendationSnapshot,
+)
 from app.services.backtesting import (
     PortfolioSimulationConfig,
     PortfolioSimulator,
     RecommendationBacktester,
 )
 from app.services.advisory.advisor import RecommendationProfile, StockScreener
+from app.services.modeling import (
+    HistoricalLogisticProbabilityEstimator,
+    ModelingDatasetBuilder,
+    ModelingDatasetConfig,
+    NullProbabilityEstimator,
+)
+
+
+PROBABILITY_TRAINING_WINDOW_DAYS = 540
 
 
 def _as_float(value):
@@ -39,7 +66,46 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-abs-gross-return-pct", type=float, default=50.0, help="Exclude trades with absolute gross return above this percent; use a negative value to disable")
     parser.add_argument("--lookback-runs", type=int, default=4, help="Number of comparable weekly runs to aggregate")
     parser.add_argument("--min-trades", type=int, default=20, help="Minimum trades required for a run to be included in decision signal")
+    parser.add_argument("--full-validation", action="store_true", help="Persist a full dashboard-ready validation run")
+    parser.add_argument("--start-date", default="", help="Backtest start date, YYYY-MM-DD. Defaults to 2020-01-01 for full validation.")
+    parser.add_argument("--end-date", default="", help="Backtest end date, YYYY-MM-DD. Defaults to latest stored price date for full validation.")
+    parser.add_argument("--run-date", default="", help="Run date to persist, YYYY-MM-DD. Defaults to today.")
+    parser.add_argument("--disable-probability", action="store_true", help="Disable diagnostic probability estimation when no probability gate is being tested")
     return parser.parse_args()
+
+
+def _parse_date(value: str, *, field_name: str) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be YYYY-MM-DD, got {value!r}") from exc
+
+
+def _latest_price_date(session) -> date:
+    latest = session.query(func.max(FactDailyPrice.price_date)).scalar()
+    if latest is None:
+        raise RuntimeError("Cannot run validation: fact_daily_prices is empty.")
+    return latest
+
+
+def _build_probability_estimator(session, *, start_date: date, end_date: date):
+    """Preload model rows once while preserving rolling training semantics."""
+    dataset_builder = ModelingDatasetBuilder(
+        session,
+        config=ModelingDatasetConfig(min_confidence_score=60.0),
+    )
+    preloaded_rows = dataset_builder.build(
+        start_date=start_date - timedelta(days=PROBABILITY_TRAINING_WINDOW_DAYS),
+        end_date=end_date,
+    )
+    return HistoricalLogisticProbabilityEstimator(
+        session,
+        training_window_days=PROBABILITY_TRAINING_WINDOW_DAYS,
+        dataset_builder=dataset_builder,
+        preloaded_rows=preloaded_rows,
+    )
 
 
 def _to_bool(value: Any) -> bool:
@@ -56,6 +122,8 @@ def _is_comparable_run(
     run: BacktestRun,
     profile: str,
     horizon_days: int,
+    run_type: str,
+    probability_enabled: bool,
     min_score: Optional[float],
     min_confidence: Optional[float],
     min_predicted_probability: Optional[float],
@@ -66,11 +134,18 @@ def _is_comparable_run(
         return False
     if int(run.horizon_days) != int(horizon_days):
         return False
+    existing_run_type = getattr(run, "run_type", None) or (
+        (run.run_metadata or {}).get("run_type", "weekly_validation")
+    )
+    if existing_run_type != run_type:
+        return False
     if int(run.total_trades) < int(min_trades):
         return False
 
     metadata = run.run_metadata or {}
     if _to_bool(metadata.get("smoke", False)):
+        return False
+    if _to_bool(metadata.get("probability_enabled", True)) != probability_enabled:
         return False
 
     # If thresholds are recorded in metadata, enforce strict comparability.
@@ -106,6 +181,8 @@ def _select_recent_comparable_runs(
     *,
     profile: str,
     horizon_days: int,
+    run_type: str,
+    probability_enabled: bool,
     min_score: Optional[float],
     min_confidence: Optional[float],
     min_predicted_probability: Optional[float],
@@ -130,6 +207,8 @@ def _select_recent_comparable_runs(
             run=run,
             profile=profile,
             horizon_days=horizon_days,
+            run_type=run_type,
+            probability_enabled=probability_enabled,
             min_score=min_score,
             min_confidence=min_confidence,
             min_predicted_probability=min_predicted_probability,
@@ -147,15 +226,22 @@ def _select_recent_comparable_runs(
 def _run_metadata_matches(
     run: BacktestRun,
     *,
+    run_type: str = "weekly_validation",
     smoke: bool,
     stock_codes: Optional[List[str]],
+    probability_enabled: bool = True,
     min_score: Optional[float],
     min_confidence: Optional[float],
     min_predicted_probability: Optional[float],
     max_abs_gross_return_pct: Optional[float],
 ) -> bool:
     metadata = run.run_metadata or {}
+    existing_run_type = getattr(run, "run_type", None) or metadata.get("run_type", "weekly_validation")
+    if existing_run_type != run_type:
+        return False
     if _to_bool(metadata.get("smoke", False)) != bool(smoke):
+        return False
+    if _to_bool(metadata.get("probability_enabled", True)) != probability_enabled:
         return False
 
     existing_stocks = metadata.get("stock_codes", "ALL")
@@ -195,8 +281,10 @@ def _replace_equivalent_run(
     end_date: date,
     horizon_days: int,
     profile: str,
+    run_type: str = "weekly_validation",
     smoke: bool,
     stock_codes: Optional[List[str]],
+    probability_enabled: bool = True,
     min_score: Optional[float],
     min_confidence: Optional[float],
     min_predicted_probability: Optional[float],
@@ -219,8 +307,10 @@ def _replace_equivalent_run(
     for run in candidates:
         if not _run_metadata_matches(
             run,
+            run_type=run_type,
             smoke=smoke,
             stock_codes=stock_codes,
+            probability_enabled=probability_enabled,
             min_score=min_score,
             min_confidence=min_confidence,
             min_predicted_probability=min_predicted_probability,
@@ -235,25 +325,275 @@ def _replace_equivalent_run(
     return deleted
 
 
+def _json_profit_factor(profit_factor: float) -> float | None:
+    if isinf(profit_factor):
+        return None
+    return round(profit_factor, 4)
+
+
+def _profit_factor_from_pnl(values: list[float]) -> float | None:
+    gross_profit = sum(value for value in values if value > 0)
+    gross_loss = abs(sum(value for value in values if value < 0))
+    if gross_loss > 0:
+        return round(gross_profit / gross_loss, 4)
+    return None if gross_profit > 0 else 0.0
+
+
+def _sector_by_stock_code(session) -> dict[str, str]:
+    rows = (
+        session.query(DimStock.stock_code, DimSector.sector_name)
+        .outerjoin(DimSector, DimSector.sector_id == DimStock.sector_id)
+        .all()
+    )
+    return {
+        stock_code.upper(): sector_name or "Unclassified"
+        for stock_code, sector_name in rows
+    }
+
+
+def _trade_lookup(trades) -> dict[tuple[str, date, date], list[Any]]:
+    lookup: dict[tuple[str, date, date], list[Any]] = defaultdict(list)
+    for trade in trades:
+        lookup[(trade.stock_code.upper(), trade.entry_date, trade.exit_date)].append(trade)
+    return lookup
+
+
+def _build_portfolio_position_rows(
+    *,
+    run_id: int,
+    portfolio_result,
+    trades,
+    sector_by_stock: dict[str, str],
+) -> list[BacktestPortfolioPosition]:
+    lookup = _trade_lookup(trades)
+    rows: list[BacktestPortfolioPosition] = []
+    for position in portfolio_result.accepted_positions:
+        key = (
+            position.stock_code.upper(),
+            position.entry_date,
+            position.exit_date,
+        )
+        matching_trades = lookup.get(key, [])
+        trade = matching_trades.pop(0) if matching_trades else None
+        if trade is None:
+            continue
+
+        rows.append(
+            BacktestPortfolioPosition(
+                run_id=run_id,
+                stock_code=position.stock_code,
+                sector_name=sector_by_stock.get(position.stock_code.upper(), "Unclassified"),
+                entry_date=position.entry_date,
+                exit_date=position.exit_date,
+                holding_days=(position.exit_date - position.entry_date).days,
+                signal_type=trade.action_type,
+                confidence=trade.confidence,
+                score=trade.score,
+                predicted_probability_10d_up=trade.predicted_probability_10d_up,
+                entry_price=trade.entry_price,
+                exit_price=trade.exit_price,
+                allocated_capital=position.allocated_capital,
+                net_return_pct=position.net_return_pct,
+                realized_pnl=position.realized_pnl,
+                exit_value=position.exit_value,
+                was_winner=position.realized_pnl > 0,
+            )
+        )
+    return rows
+
+
+def _build_portfolio_equity_rows(
+    *,
+    run_id: int,
+    portfolio_result,
+) -> list[BacktestPortfolioEquityPoint]:
+    return [
+        BacktestPortfolioEquityPoint(
+            run_id=run_id,
+            point_index=index,
+            event_date=point.event_date,
+            cash=point.cash,
+            open_position_capital=point.open_position_capital,
+            equity=point.equity,
+            drawdown_pct=point.drawdown_pct,
+            open_positions=point.open_positions,
+        )
+        for index, point in enumerate(portfolio_result.equity_curve, start=1)
+    ]
+
+
+def _equity_at_or_before(points, target_date: date, default: float) -> float:
+    equity = default
+    for point in sorted(points, key=lambda item: item.event_date):
+        if point.event_date > target_date:
+            break
+        equity = point.equity
+    return equity
+
+
+def _build_yearly_rows(
+    *,
+    run_id: int,
+    portfolio_result,
+) -> list[BacktestYearlyPerformance]:
+    if portfolio_result.start_date is None or portfolio_result.end_date is None:
+        return []
+
+    rows: list[BacktestYearlyPerformance] = []
+    positions = portfolio_result.accepted_positions
+    points = portfolio_result.equity_curve
+    initial = portfolio_result.config.initial_capital
+    for year in range(portfolio_result.start_date.year, portfolio_result.end_date.year + 1):
+        year_start = date(year, 1, 1)
+        year_end = date(year, 12, 31)
+        year_positions = [
+            position for position in positions if position.entry_date.year == year
+        ]
+        returns = [position.net_return_pct for position in year_positions]
+        pnl_values = [position.realized_pnl for position in year_positions]
+        wins = [position for position in year_positions if position.realized_pnl > 0]
+        starting_equity = _equity_at_or_before(
+            points,
+            year_start - timedelta(days=1),
+            initial,
+        )
+        ending_equity = _equity_at_or_before(points, year_end, starting_equity)
+        year_points = [
+            point for point in points if year_start <= point.event_date <= year_end
+        ]
+        trade_count = len(year_positions)
+        rows.append(
+            BacktestYearlyPerformance(
+                run_id=run_id,
+                calendar_year=year,
+                trade_count=trade_count,
+                win_rate_pct=round(len(wins) / trade_count * 100.0, 2) if trade_count else 0.0,
+                average_return_pct=round(sum(returns) / trade_count, 2) if trade_count else 0.0,
+                profit_factor=_profit_factor_from_pnl(pnl_values),
+                portfolio_return_pct=round(
+                    ((ending_equity - starting_equity) / starting_equity * 100.0)
+                    if starting_equity
+                    else 0.0,
+                    2,
+                ),
+                portfolio_max_drawdown_pct=round(
+                    max((point.drawdown_pct for point in year_points), default=0.0),
+                    2,
+                ),
+                portfolio_win_rate_pct=round(len(wins) / trade_count * 100.0, 2) if trade_count else 0.0,
+                portfolio_profit_factor=_profit_factor_from_pnl(pnl_values),
+                starting_equity=round(starting_equity, 4),
+                ending_equity=round(ending_equity, 4),
+            )
+        )
+    return rows
+
+
+def _build_stock_rows(
+    *,
+    run_id: int,
+    portfolio_result,
+    sector_by_stock: dict[str, str],
+) -> list[BacktestStockPerformance]:
+    grouped: dict[str, list[Any]] = defaultdict(list)
+    for position in portfolio_result.accepted_positions:
+        grouped[position.stock_code.upper()].append(position)
+
+    rows: list[BacktestStockPerformance] = []
+    for stock_code, positions in sorted(grouped.items()):
+        returns = [position.net_return_pct for position in positions]
+        pnl_values = [position.realized_pnl for position in positions]
+        wins = [position for position in positions if position.realized_pnl > 0]
+        rows.append(
+            BacktestStockPerformance(
+                run_id=run_id,
+                stock_code=stock_code,
+                sector_name=sector_by_stock.get(stock_code, "Unclassified"),
+                trade_count=len(positions),
+                win_rate_pct=round(len(wins) / len(positions) * 100.0, 2),
+                average_return_pct=round(sum(returns) / len(positions), 2),
+                total_realized_pnl=round(sum(pnl_values), 4),
+                best_trade_pct=round(max(returns), 4),
+                worst_trade_pct=round(min(returns), 4),
+                profit_factor=_profit_factor_from_pnl(pnl_values),
+            )
+        )
+    return rows
+
+
+def _build_sector_rows(
+    *,
+    run_id: int,
+    portfolio_result,
+    sector_by_stock: dict[str, str],
+) -> list[BacktestSectorPerformance]:
+    grouped: dict[str, list[Any]] = defaultdict(list)
+    for position in portfolio_result.accepted_positions:
+        sector = sector_by_stock.get(position.stock_code.upper(), "Unclassified")
+        grouped[sector].append(position)
+
+    rows: list[BacktestSectorPerformance] = []
+    for sector_name, positions in sorted(grouped.items()):
+        returns = [position.net_return_pct for position in positions]
+        pnl_values = [position.realized_pnl for position in positions]
+        wins = [position for position in positions if position.realized_pnl > 0]
+        rows.append(
+            BacktestSectorPerformance(
+                run_id=run_id,
+                sector_name=sector_name,
+                trade_count=len(positions),
+                win_rate_pct=round(len(wins) / len(positions) * 100.0, 2),
+                average_return_pct=round(sum(returns) / len(positions), 2),
+                total_realized_pnl=round(sum(pnl_values), 4),
+                profit_factor=_profit_factor_from_pnl(pnl_values),
+            )
+        )
+    return rows
+
+
 def main() -> None:
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
     logging.getLogger("stock_screener").setLevel(logging.WARNING)
     args = parse_args()
-    run_date = date.today()
-    start_date = run_date - timedelta(days=30 if args.smoke else 183)
-    end_date = run_date
+    run_date = _parse_date(args.run_date, field_name="run-date") or date.today()
     horizon_days = 5 if args.smoke else 10
     profile = RecommendationProfile.STEADY_20P_10D.value
+    run_type = "full_validation" if args.full_validation else "weekly_validation"
     stock_codes = [code.strip().upper() for code in args.stocks.split(",") if code.strip()] or None
     max_abs_gross_return_pct = (
         None if args.max_abs_gross_return_pct < 0 else args.max_abs_gross_return_pct
     )
     if args.smoke and not stock_codes:
         stock_codes = ["GTCO", "ZENITHBANK", "CADBURY", "STANBIC", "WAPCO"]
+    if args.disable_probability and args.min_predicted_probability is not None:
+        raise SystemExit("--disable-probability cannot be combined with --min-predicted-probability")
 
     db = get_db()
+    db.engine.echo = False
     Base.metadata.create_all(db.engine)
     with db.get_session() as session:
+        requested_start_date = _parse_date(args.start_date, field_name="start-date")
+        requested_end_date = _parse_date(args.end_date, field_name="end-date")
+        if args.full_validation:
+            start_date = requested_start_date or date(2020, 1, 1)
+            end_date = requested_end_date or _latest_price_date(session)
+        else:
+            end_date = requested_end_date or run_date
+            start_date = requested_start_date or (
+                end_date - timedelta(days=30 if args.smoke else 183)
+            )
+        if start_date > end_date:
+            raise ValueError(
+                f"Invalid validation window: {start_date} is after {end_date}."
+            )
+        probability_estimator = None
+        if not args.disable_probability:
+            probability_estimator = _build_probability_estimator(
+                session,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
         _replace_equivalent_run(
             session,
             run_date=run_date,
@@ -261,8 +601,10 @@ def main() -> None:
             end_date=end_date,
             horizon_days=horizon_days,
             profile=profile,
+            run_type=run_type,
             smoke=args.smoke,
             stock_codes=stock_codes,
+            probability_enabled=not args.disable_probability,
             min_score=args.min_score,
             min_confidence=args.min_confidence,
             min_predicted_probability=args.min_predicted_probability,
@@ -274,6 +616,8 @@ def main() -> None:
             strategy_profile=profile,
             round_trip_cost_pct=0.20,
             max_abs_gross_return_pct=max_abs_gross_return_pct,
+            calculate_probability=not args.disable_probability,
+            probability_estimator=probability_estimator,
         )
         result = backtester.run(
             start_date=start_date,
@@ -312,14 +656,17 @@ def main() -> None:
             profit_factor=round(result.profit_factor, 4),
             directional_accuracy_pct=round(result.directional_accuracy_pct, 2),
             max_drawdown_pct=round(result.max_drawdown_pct, 2),
+            run_type=run_type,
             run_metadata={
                 "wins": result.wins,
                 "losses": result.losses,
+                "run_type": run_type,
                 "smoke": args.smoke,
                 "stock_codes": stock_codes or "ALL",
                 "min_score": args.min_score,
                 "min_confidence": args.min_confidence,
                 "min_predicted_probability": args.min_predicted_probability,
+                "probability_enabled": not args.disable_probability,
                 "max_abs_gross_return_pct": max_abs_gross_return_pct,
                 "top_n_per_day": 1,
                 "avoid_overlapping_positions": True,
@@ -328,6 +675,8 @@ def main() -> None:
         )
         session.add(run)
         session.flush()
+
+        sector_by_stock = _sector_by_stock_code(session)
 
         trades: List[BacktestTrade] = []
         for trade in result.trades:
@@ -348,11 +697,52 @@ def main() -> None:
                 )
             )
         session.add_all(trades)
+        session.add_all(
+            _build_portfolio_position_rows(
+                run_id=run.run_id,
+                portfolio_result=portfolio_result,
+                trades=result.trades,
+                sector_by_stock=sector_by_stock,
+            )
+        )
+        session.add_all(
+            _build_portfolio_equity_rows(
+                run_id=run.run_id,
+                portfolio_result=portfolio_result,
+            )
+        )
+        session.add_all(
+            _build_yearly_rows(
+                run_id=run.run_id,
+                portfolio_result=portfolio_result,
+            )
+        )
+        session.add_all(
+            _build_stock_rows(
+                run_id=run.run_id,
+                portfolio_result=portfolio_result,
+                sector_by_stock=sector_by_stock,
+            )
+        )
+        session.add_all(
+            _build_sector_rows(
+                run_id=run.run_id,
+                portfolio_result=portfolio_result,
+                sector_by_stock=sector_by_stock,
+            )
+        )
 
-        screener = StockScreener(session, strategy_profile=profile)
+        screener = StockScreener(
+            session,
+            strategy_profile=profile,
+            probability_estimator=probability_estimator,
+        )
+        if args.disable_probability:
+            screener.probability_estimator = NullProbabilityEstimator()
         recommendations = screener.generate_recommendations(
             recommendation_date=end_date,
             strategy_profile=profile,
+            stock_codes=stock_codes,
         )
         snapshots: List[RecommendationSnapshot] = []
         for rec in recommendations[:10]:
@@ -378,6 +768,8 @@ def main() -> None:
             session,
             profile=profile,
             horizon_days=horizon_days,
+            run_type=run_type,
+            probability_enabled=not args.disable_probability,
             min_score=args.min_score,
             min_confidence=args.min_confidence,
             min_predicted_probability=args.min_predicted_probability,
@@ -389,6 +781,7 @@ def main() -> None:
             session.query(DecisionSignal).filter(
                 DecisionSignal.run_date == run_date,
                 DecisionSignal.profile == profile,
+                DecisionSignal.run_type == run_type,
             ).delete(synchronize_session=False)
 
             portfolio_runs = [
@@ -449,6 +842,7 @@ def main() -> None:
                 DecisionSignal(
                     run_date=run_date,
                     profile=profile,
+                    run_type=run_type,
                     status=status,
                     win_rate_pct=round(avg_win_rate, 2),
                     average_return_pct=round(avg_return, 2),
@@ -462,6 +856,9 @@ def main() -> None:
     print(
         {
             "run_date": run_date.isoformat(),
+                    "run_type": run_type,
+                    "start_date": start_date.isoformat(),
+                    "end_date": end_date.isoformat(),
                     "profile": profile,
                     "total_trades": result.total_trades,
                     "snapshots": len(recommendations[:10]),
@@ -469,6 +866,7 @@ def main() -> None:
                     "min_score": args.min_score,
                     "min_confidence": args.min_confidence,
                     "min_predicted_probability": args.min_predicted_probability,
+                    "probability_enabled": not args.disable_probability,
                     "max_abs_gross_return_pct": max_abs_gross_return_pct,
                     "lookback_runs": args.lookback_runs,
                     "min_trades": args.min_trades,
