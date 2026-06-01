@@ -23,6 +23,10 @@ from app.services.advisory.selection import (
     SelectionConfig,
     SelectionDecision,
 )
+from app.services.advisory.portfolio_policy import (
+    PortfolioPolicyConfig,
+    ProductionPortfolioPolicy,
+)
 from app.services.advisory.advisor import (
     StockScreener,
     StockRecommendation,
@@ -49,6 +53,8 @@ __all__ = [
     'RecommendationSelectionEvaluator',
     'SelectionConfig',
     'SelectionDecision',
+    'PortfolioPolicyConfig',
+    'ProductionPortfolioPolicy',
     'StockScreener',
     'StockRecommendation',
     'RecommendationAction',

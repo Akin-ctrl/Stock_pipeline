@@ -31,7 +31,7 @@ from app.services.processors import DataValidator, DataTransformer
 from app.services.processors.reconciliation import ReconciliationEngine
 from app.services.indicators import IndicatorCalculator
 from app.services.alerts import AlertEvaluator, AlertNotifier
-from app.services.advisory import StockScreener
+from app.services.advisory import ProductionPortfolioPolicy, StockScreener
 from app.utils import get_logger
 from app.utils.exceptions import DataValidationError
 
@@ -1771,6 +1771,7 @@ class PipelineOrchestrator:
                     strategy_profile=self.config.recommendation_profile,
                 )
                 rec_repo = RecommendationRepository(session)
+                portfolio_policy = ProductionPortfolioPolicy()
                 
                 # Generate recommendations
                 recommendations = screener.generate_recommendations(
@@ -1778,20 +1779,55 @@ class PipelineOrchestrator:
                     stock_codes=stock_codes,
                     strategy_profile=self.config.recommendation_profile,
                 )
+                open_positions = portfolio_policy.count_open_positions(
+                    session,
+                    recommendation_date=execution_date,
+                    profile=self.config.recommendation_profile,
+                )
+                recommendations = portfolio_policy.apply(
+                    recommendations,
+                    existing_open_positions=open_positions,
+                )
+
+                if stock_codes is None:
+                    deleted = rec_repo.delete_recommendations_for_date_profile(
+                        recommendation_date=execution_date,
+                        profile=self.config.recommendation_profile,
+                    )
+                    if deleted:
+                        self.logger.info(
+                            f"Deleted {deleted} existing recommendation rows "
+                            f"for {execution_date} before full regeneration",
+                            extra={
+                                "deleted_recommendations": deleted,
+                                "recommendation_date": str(execution_date),
+                            },
+                        )
                 
                 if recommendations:
                     # Save to database
                     saved = rec_repo.create_recommendations_bulk(recommendations)
+                    approved = sum(
+                        1
+                        for rec in recommendations
+                        if rec.portfolio_approved
+                    )
                     
                     self.logger.info(
-                        f"Generated {saved} screening signals",
-                        extra={"recommendations": saved}
+                        f"Generated {saved} screening signals; "
+                        f"{approved} portfolio-approved",
+                        extra={
+                            "recommendations": saved,
+                            "portfolio_approved": approved,
+                            "open_positions_before": open_positions,
+                        }
                     )
                     
                     # Log top picks
                     buy_picks = [
                         r for r in recommendations
-                        if r.action_type.value in ('BUY', 'STRONG_BUY')
+                        if r.portfolio_approved
+                        and r.action_type.value in ('BUY', 'STRONG_BUY')
                     ]
                     
                     if buy_picks:
