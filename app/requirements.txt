@@ -3,6 +3,7 @@ yfinance
 requests
 pandas
 numpy<2
+scikit-learn
 beautifulsoup4
 jinja2
 afrimarket  # African stock market data API

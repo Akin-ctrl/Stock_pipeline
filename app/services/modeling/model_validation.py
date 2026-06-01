@@ -192,23 +192,34 @@ class WalkForwardModelValidator:
         """Run walk-forward validation across the requested date range."""
         folds: list[WalkForwardFoldResult] = []
         skipped_folds = 0
+        windows = list(
+            generate_walk_forward_windows(
+                start_date=start_date,
+                end_date=end_date,
+                training_window_days=self.training_window_days,
+                evaluation_window_days=self.evaluation_window_days,
+                step_days=self.step_days,
+            )
+        )
+        if not windows:
+            return self._build_report(folds=folds, skipped_folds=skipped_folds)
 
-        for window in generate_walk_forward_windows(
-            start_date=start_date,
-            end_date=end_date,
-            training_window_days=self.training_window_days,
-            evaluation_window_days=self.evaluation_window_days,
-            step_days=self.step_days,
-        ):
-            training_rows = self._build_rows_for_anchor_window(
+        all_rows = self._build_rows_for_anchor_window(
+            anchor_start=windows[0].training_start,
+            anchor_end=end_date,
+            stock_codes=stock_codes,
+        )
+
+        for window in windows:
+            training_rows = self._filter_rows_for_anchor_window(
+                rows=all_rows,
                 anchor_start=window.training_start,
                 anchor_end=window.training_end,
-                stock_codes=stock_codes,
             )
-            evaluation_rows = self._build_rows_for_anchor_window(
+            evaluation_rows = self._filter_rows_for_anchor_window(
+                rows=all_rows,
                 anchor_start=window.evaluation_start,
                 anchor_end=window.evaluation_end,
-                stock_codes=stock_codes,
             )
 
             if not evaluation_rows:
@@ -240,11 +251,27 @@ class WalkForwardModelValidator:
     ) -> list[ModelingDatasetRow]:
         """Build rows whose anchors fall within the requested inclusive window."""
         horizon_days = self.dataset_builder.config.target_definition.horizon_trading_days
+        label_buffer_days = max(horizon_days * 3, horizon_days + 14)
+        feature_buffer_days = 180
         rows = self.dataset_builder.build(
-            start_date=anchor_start,
-            end_date=anchor_end + timedelta(days=horizon_days),
+            start_date=anchor_start - timedelta(days=feature_buffer_days),
+            end_date=anchor_end + timedelta(days=label_buffer_days),
             stock_codes=stock_codes,
         )
+        return self._filter_rows_for_anchor_window(
+            rows=rows,
+            anchor_start=anchor_start,
+            anchor_end=anchor_end,
+        )
+
+    def _filter_rows_for_anchor_window(
+        self,
+        *,
+        rows: Sequence[ModelingDatasetRow],
+        anchor_start: date,
+        anchor_end: date,
+    ) -> list[ModelingDatasetRow]:
+        """Return cached rows whose anchors fall inside the inclusive window."""
         return [
             row
             for row in rows
