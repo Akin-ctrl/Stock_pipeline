@@ -13,6 +13,7 @@ class SelectionConfig:
     min_heuristic_score: float
     min_signal_agreement: float
     buy_only: bool
+    min_predicted_probability: Optional[float] = None
 
 
 @dataclass(frozen=True)

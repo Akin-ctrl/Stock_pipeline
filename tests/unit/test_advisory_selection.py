@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+
+from app.services.advisory.advisor import StockScreener
 from app.services.advisory.selection import (
     RecommendationSelectionEvaluator,
     SelectionConfig,
@@ -58,3 +61,32 @@ def test_selection_evaluator_applies_action_and_threshold_rules():
     assert rejected_probability.rejection_reason == "below_min_predicted_probability"
     assert rejected_missing_probability.selected is False
     assert rejected_missing_probability.rejection_reason == "missing_predicted_probability"
+
+
+def test_recommendation_rank_key_keeps_probability_diagnostic():
+    stronger_heuristic = SimpleNamespace(
+        heuristic_score=75.0,
+        signal_agreement=0.70,
+        predicted_probability_10d_up=0.40,
+    )
+    weaker_heuristic_higher_probability = SimpleNamespace(
+        heuristic_score=70.0,
+        signal_agreement=0.70,
+        predicted_probability_10d_up=0.95,
+    )
+    same_heuristic_higher_probability = SimpleNamespace(
+        heuristic_score=75.0,
+        signal_agreement=0.70,
+        predicted_probability_10d_up=0.60,
+    )
+
+    assert StockScreener._recommendation_rank_key(
+        stronger_heuristic
+    ) > StockScreener._recommendation_rank_key(
+        weaker_heuristic_higher_probability
+    )
+    assert StockScreener._recommendation_rank_key(
+        same_heuristic_higher_probability
+    ) > StockScreener._recommendation_rank_key(
+        stronger_heuristic
+    )
