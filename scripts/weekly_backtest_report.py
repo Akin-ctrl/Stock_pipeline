@@ -12,7 +12,11 @@ from typing import Any, List, Optional
 
 from app.config.database import get_db
 from app.models import Base, BacktestRun, BacktestTrade, RecommendationSnapshot, DecisionSignal
-from app.services.backtesting import RecommendationBacktester
+from app.services.backtesting import (
+    PortfolioSimulationConfig,
+    PortfolioSimulator,
+    RecommendationBacktester,
+)
 from app.services.advisory.advisor import RecommendationProfile, StockScreener
 
 
@@ -24,12 +28,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Weekly backtest + recommendation snapshot")
     parser.add_argument("--smoke", action="store_true", help="Run a lightweight smoke test on a small stock subset")
     parser.add_argument("--stocks", default="", help="Comma-separated stock codes to limit the run")
-    parser.add_argument("--min-score", type=float, default=60.0, help="Legacy minimum heuristic score for backtest screening")
-    parser.add_argument("--min-confidence", type=float, default=0.70, help="Legacy minimum signal agreement for backtest screening")
-    parser.add_argument("--min-predicted-probability", type=float, default=None, help="Minimum predicted 10-day up probability for backtest screening")
+    parser.add_argument("--min-score", type=float, default=70.0, help="Legacy minimum heuristic score for backtest screening")
+    parser.add_argument("--min-confidence", type=float, default=0.60, help="Legacy minimum signal agreement for backtest screening")
+    parser.add_argument(
+        "--min-predicted-probability",
+        type=float,
+        default=None,
+        help="Minimum predicted 10-day up probability for backtest screening; use 0 to disable",
+    )
     parser.add_argument("--max-abs-gross-return-pct", type=float, default=50.0, help="Exclude trades with absolute gross return above this percent; use a negative value to disable")
     parser.add_argument("--lookback-runs", type=int, default=4, help="Number of comparable weekly runs to aggregate")
-    parser.add_argument("--min-trades", type=int, default=80, help="Minimum trades required for a run to be included in decision signal")
+    parser.add_argument("--min-trades", type=int, default=20, help="Minimum trades required for a run to be included in decision signal")
     return parser.parse_args()
 
 
@@ -275,7 +284,19 @@ def main() -> None:
             min_confidence=args.min_confidence,
             min_predicted_probability=args.min_predicted_probability,
             include_hold=False,
+            top_n_per_day=1,
+            avoid_overlapping_positions=True,
         )
+        portfolio_config = PortfolioSimulationConfig(
+            initial_capital=1_000_000.0,
+            max_concurrent_positions=3,
+            max_entries_per_day=1,
+            position_size_pct=0.20,
+        )
+        portfolio_result = PortfolioSimulator(portfolio_config).simulate(result.trades)
+        portfolio_payload = portfolio_result.to_dict()
+        portfolio_payload.pop("accepted_positions", None)
+        portfolio_payload.pop("equity_curve", None)
 
         run = BacktestRun(
             run_date=run_date,
@@ -300,6 +321,9 @@ def main() -> None:
                 "min_confidence": args.min_confidence,
                 "min_predicted_probability": args.min_predicted_probability,
                 "max_abs_gross_return_pct": max_abs_gross_return_pct,
+                "top_n_per_day": 1,
+                "avoid_overlapping_positions": True,
+                "portfolio": portfolio_payload,
             },
         )
         session.add(run)
@@ -367,10 +391,39 @@ def main() -> None:
                 DecisionSignal.profile == profile,
             ).delete(synchronize_session=False)
 
-            avg_win_rate = sum(float(run.win_rate_pct) for run in recent_runs) / len(recent_runs)
-            avg_return = sum(float(run.average_return_pct) for run in recent_runs) / len(recent_runs)
-            avg_pf = sum(float(run.profit_factor) for run in recent_runs) / len(recent_runs)
-            max_dd = max(float(run.max_drawdown_pct) for run in recent_runs)
+            portfolio_runs = [
+                run.run_metadata.get("portfolio")
+                for run in recent_runs
+                if run.run_metadata and run.run_metadata.get("portfolio")
+            ]
+            if portfolio_runs:
+                avg_win_rate = sum(
+                    float(run["win_rate_pct"])
+                    for run in portfolio_runs
+                ) / len(portfolio_runs)
+                avg_return = sum(
+                    float(run["total_return_pct"])
+                    for run in portfolio_runs
+                ) / len(portfolio_runs)
+                bounded_profit_factors = [
+                    float(run["profit_factor"])
+                    for run in portfolio_runs
+                    if run["profit_factor"] is not None
+                ]
+                avg_pf = (
+                    sum(bounded_profit_factors) / len(bounded_profit_factors)
+                    if bounded_profit_factors
+                    else 0.0
+                )
+                max_dd = max(
+                    float(run["max_drawdown_pct"])
+                    for run in portfolio_runs
+                )
+            else:
+                avg_win_rate = sum(float(run.win_rate_pct) for run in recent_runs) / len(recent_runs)
+                avg_return = sum(float(run.average_return_pct) for run in recent_runs) / len(recent_runs)
+                avg_pf = sum(float(run.profit_factor) for run in recent_runs) / len(recent_runs)
+                max_dd = max(float(run.max_drawdown_pct) for run in recent_runs)
 
             if avg_win_rate >= 45 and avg_return > 0 and avg_pf >= 1.2 and max_dd <= 25:
                 status = "GREEN"
@@ -419,6 +472,7 @@ def main() -> None:
                     "max_abs_gross_return_pct": max_abs_gross_return_pct,
                     "lookback_runs": args.lookback_runs,
                     "min_trades": args.min_trades,
+                    "portfolio": portfolio_payload,
         }
     )
 

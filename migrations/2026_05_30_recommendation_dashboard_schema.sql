@@ -50,6 +50,16 @@ CREATE TABLE fact_recommendations (
     rsi_14 NUMERIC(5, 2),
     macd NUMERIC(18, 4),
 
+    portfolio_approved BOOLEAN NOT NULL DEFAULT FALSE,
+    portfolio_rejection_reason VARCHAR(50),
+    portfolio_rank INTEGER,
+    portfolio_position_size_pct NUMERIC(6, 4),
+    portfolio_policy_version VARCHAR(50),
+    portfolio_open_positions_before INTEGER,
+    portfolio_available_slots_before INTEGER,
+    portfolio_max_concurrent_positions INTEGER,
+    portfolio_max_entries_per_day INTEGER,
+
     model_version VARCHAR(50),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     outcome VARCHAR(20),
@@ -94,6 +104,8 @@ CREATE INDEX ix_fact_recommendations_action_type
     ON fact_recommendations (action_type);
 CREATE INDEX ix_fact_recommendations_active
     ON fact_recommendations (is_active);
+CREATE INDEX ix_fact_recommendations_portfolio_approved
+    ON fact_recommendations (recommendation_date, profile, portfolio_approved);
 CREATE INDEX ix_fact_recommendations_rank
     ON fact_recommendations (
         recommendation_date DESC,
@@ -208,6 +220,15 @@ SELECT
     r.volume_score,
     r.rsi_14,
     r.macd,
+    r.portfolio_approved,
+    r.portfolio_rejection_reason,
+    r.portfolio_rank,
+    r.portfolio_position_size_pct,
+    r.portfolio_policy_version,
+    r.portfolio_open_positions_before,
+    r.portfolio_available_slots_before,
+    r.portfolio_max_concurrent_positions,
+    r.portfolio_max_entries_per_day,
     r.reasons,
     r.model_version,
     r.created_at
@@ -221,7 +242,8 @@ FROM vw_recommendation_board
 WHERE recommendation_date = (
     SELECT MAX(recommendation_date)
     FROM fact_recommendations
-);
+)
+AND portfolio_approved;
 
 CREATE OR REPLACE VIEW vw_sector_performance AS
 WITH latest_date AS (
@@ -253,7 +275,10 @@ SELECT
     ROUND(AVG(lp.change_ytd_pct), 4) AS average_ytd_return_pct,
     SUM(lp.volume) AS total_volume,
     COUNT(lr.recommendation_id) AS recommendation_count,
-    COUNT(lr.recommendation_id) FILTER (WHERE lr.action_type IN ('BUY', 'STRONG_BUY')) AS actionable_count,
+    COUNT(lr.recommendation_id) FILTER (
+        WHERE lr.action_type IN ('BUY', 'STRONG_BUY')
+        AND lr.portfolio_approved
+    ) AS actionable_count,
     ROUND(AVG(lr.heuristic_score), 2) AS average_heuristic_score,
     ROUND(AVG(lr.predicted_probability_10d_up * 100.0), 2) AS average_probability_pct
 FROM latest_date ld
@@ -279,6 +304,10 @@ SELECT
     br.profit_factor,
     br.directional_accuracy_pct,
     br.max_drawdown_pct,
+    (br.run_metadata->'portfolio'->>'total_return_pct')::numeric AS portfolio_return_pct,
+    (br.run_metadata->'portfolio'->>'max_drawdown_pct')::numeric AS portfolio_max_drawdown_pct,
+    (br.run_metadata->'portfolio'->>'win_rate_pct')::numeric AS portfolio_win_rate_pct,
+    (br.run_metadata->'portfolio'->>'profit_factor')::numeric AS portfolio_profit_factor,
     ds.status AS decision_status,
     ds.lookback_runs,
     ds.rationale,

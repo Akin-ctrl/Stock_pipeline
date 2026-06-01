@@ -68,8 +68,10 @@ def main() -> None:
             .filter(
                 FactRecommendation.recommendation_date == snapshot_date,
                 FactRecommendation.profile == profile,
+                FactRecommendation.portfolio_approved.is_(True),
             )
             .order_by(
+                FactRecommendation.portfolio_rank.asc().nullslast(),
                 desc(FactRecommendation.predicted_probability_10d_up),
                 desc(FactRecommendation.heuristic_score),
                 desc(FactRecommendation.signal_agreement),
