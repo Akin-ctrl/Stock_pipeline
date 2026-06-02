@@ -339,5 +339,4 @@ It was based on the existing model set:
 
 See:
 
-- [Architecture Redesign Proposal](./ARCHITECTURE_REDESIGN_PROPOSAL.md)
-- [Schema Transition Map](./SCHEMA_TRANSITION_MAP.md)
+- [Architecture Redesign Proposal](./archive/ARCHITECTURE_REDESIGN_PROPOSAL.md)

@@ -104,10 +104,8 @@ The current codebase still has important gaps:
 
 See:
 
-- [Model Redesign Backlog](./docs/MODEL_REDESIGN_BACKLOG.md)
-- [Cleanup Plan](./docs/CLEANUP_PLAN.md)
-- [Architecture Redesign Proposal](./docs/ARCHITECTURE_REDESIGN_PROPOSAL.md)
-- [Schema Transition Map](./docs/SCHEMA_TRANSITION_MAP.md)
+- [Docs Index](./docs/README.md)
+- [Planned Features](./docs/PLANNED_FEATURES.md)
 
 ## Quick Start
 
@@ -122,7 +120,7 @@ Current service ports from `docker-compose.yml`:
 - Airflow UI: `http://localhost:8080`
 - PostgreSQL: `localhost:5433`
 - PgAdmin: `http://localhost:5051`
-- Metabase: `http://localhost:3000`
+- Superset: `http://localhost:8089`
 
 ### Airflow DAGs
 
@@ -177,6 +175,10 @@ read-only inspection. Airflow remains the primary operational control plane.
 - [Deployment Guide](./docs/3_DEPLOYMENT_GUIDE.md)
 - [User Guide](./docs/4_USER_GUIDE.md)
 
+## License
+
+This project is licensed under the Apache License 2.0. See [LICENSE](./LICENSE).
+
 ## Weekly Backtest + Dashboard
 
 Run the weekly report once (full run):
@@ -191,7 +193,7 @@ Smoke test (fast, 30 days, subset):
 docker compose exec -T airflow-webserver sh -lc "python /Stock_pipeline/scripts/weekly_backtest_report.py --smoke"
 ```
 
-Then open Metabase and connect it to the `stock_pipeline` database to visualize:
+Then open Superset at `http://localhost:8089` to visualize:
 
 - dashboard semantic views such as `vw_daily_recommendation_board`,
   `vw_model_health`, `vw_backtest_equity_curve`, and `vw_data_quality_monitor`
@@ -199,17 +201,9 @@ Then open Metabase and connect it to the `stock_pipeline` database to visualize:
 - `backtest_trades`
 - `recommendation_snapshots`
 
-Metabase seed dashboard (template):
-
-```bash
-python scripts/generate_metabase_seed.py
-```
-- [Architecture Redesign Proposal](./docs/ARCHITECTURE_REDESIGN_PROPOSAL.md)
-- [Schema Transition Map](./docs/SCHEMA_TRANSITION_MAP.md)
-
 ## Next Direction
 
-The current next direction is:
+The current(ongoing) next direction is:
 
 1. validate the refreshed historical dataset and model behavior
 2. calibrate score and probability thresholds from real backtest results
