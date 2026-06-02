@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,8 @@ class EligibilityConfig:
     min_price_confidence_score: float
     require_complete_data: bool
     require_official: bool
+    min_drawdown_20d_pct: Optional[float] = None
+    max_price_change_20d_pct: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,22 @@ class RecommendationEligibilityEvaluator:
 
         if cfg.require_official and not indicators.get("is_official", False):
             return EligibilityDecision(False, "requires_official_data")
+
+        drawdown_20d_pct = indicators.get("drawdown_20d_pct")
+        if (
+            cfg.min_drawdown_20d_pct is not None
+            and drawdown_20d_pct is not None
+            and drawdown_20d_pct < cfg.min_drawdown_20d_pct
+        ):
+            return EligibilityDecision(False, "below_min_drawdown_20d")
+
+        price_change_20d = indicators.get("price_change_20d")
+        if (
+            cfg.max_price_change_20d_pct is not None
+            and price_change_20d is not None
+            and price_change_20d > cfg.max_price_change_20d_pct
+        ):
+            return EligibilityDecision(False, "above_max_price_change_20d")
 
         rsi_val = indicators.get("rsi_14")
         if rsi_val is not None and (rsi_val < cfg.rsi_min or rsi_val > cfg.rsi_max):

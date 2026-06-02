@@ -84,6 +84,21 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
             .delete(synchronize_session=False)
         )
         return deleted
+
+    def delete_recommendations_for_date_profile(
+        self,
+        recommendation_date: date,
+        profile: str = "steady_20p_10d",
+    ) -> int:
+        """Delete one full recommendation snapshot before regenerating it."""
+        return (
+            self.session.query(FactRecommendation)
+            .filter(
+                FactRecommendation.recommendation_date == recommendation_date,
+                FactRecommendation.profile == profile,
+            )
+            .delete(synchronize_session=False)
+        )
     
     def create_recommendations_bulk(
         self,
@@ -176,6 +191,41 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
             volume_score=Decimal(str(rec.stock_score.volume_score)),
             rsi_14=_decimal_or_none(rec.indicators.get('rsi_14')),
             macd=_decimal_or_none(rec.indicators.get('macd')),
+            portfolio_approved=bool(getattr(rec, "portfolio_approved", False)),
+            portfolio_rejection_reason=getattr(
+                rec,
+                "portfolio_rejection_reason",
+                None,
+            ),
+            portfolio_rank=getattr(rec, "portfolio_rank", None),
+            portfolio_position_size_pct=_decimal_or_none(
+                getattr(rec, "portfolio_position_size_pct", None)
+            ),
+            portfolio_policy_version=getattr(
+                rec,
+                "portfolio_policy_version",
+                None,
+            ),
+            portfolio_open_positions_before=getattr(
+                rec,
+                "portfolio_open_positions_before",
+                None,
+            ),
+            portfolio_available_slots_before=getattr(
+                rec,
+                "portfolio_available_slots_before",
+                None,
+            ),
+            portfolio_max_concurrent_positions=getattr(
+                rec,
+                "portfolio_max_concurrent_positions",
+                None,
+            ),
+            portfolio_max_entries_per_day=getattr(
+                rec,
+                "portfolio_max_entries_per_day",
+                None,
+            ),
             model_version="historical_logistic_v1"
             if rec.predicted_probability_10d_up is not None
             else None,
@@ -304,12 +354,16 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
         Returns:
             List of top FactRecommendation instances
         """
+        action_filter = (
+            FactRecommendation.action_type.in_(['BUY', 'STRONG_BUY'])
+            if signal_type == 'BUY'
+            else FactRecommendation.action_type == signal_type
+        )
         return self.session.query(FactRecommendation).filter(
             and_(
                 FactRecommendation.recommendation_date == recommendation_date,
-                FactRecommendation.action_type.in_(['BUY', 'STRONG_BUY'])
-                    if signal_type == 'BUY'
-                    else FactRecommendation.action_type == signal_type
+                FactRecommendation.portfolio_approved.is_(True),
+                action_filter,
             )
         ).options(
             joinedload(FactRecommendation.stock)

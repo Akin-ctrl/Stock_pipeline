@@ -1,8 +1,8 @@
 # Documentation Map
 
-This docs set has been reset to match the current codebase state as of
-2026-05-31, after the DAG schedule, schema, idempotency, historical-indicator,
-recommendation-model, and dashboard-view correction work.
+This docs set tracks the current codebase state after the DAG schedule, schema,
+idempotency, historical-indicator, recommendation-model, Superset dashboard,
+and dashboard-platform migration work.
 
 ## Core Documents
 
@@ -21,20 +21,6 @@ recommendation-model, and dashboard-view correction work.
 - [4. User Guide](./4_USER_GUIDE.md)
   How to run the system today, what to trust, and what is still in transition.
 
-## Current Design References
-
-- [Architecture Redesign Proposal](./ARCHITECTURE_REDESIGN_PROPOSAL.md)
-  Historical proposal and future architecture reference. It is no longer the
-  current implementation authority.
-
-- [Schema Transition Map](./SCHEMA_TRANSITION_MAP.md)
-  Historical transition map. Most core schema transition work has now been
-  implemented.
-
-- [Pipeline Corrections Todo](./PIPELINE_CORRECTIONS_TODO.md)
-  Historical correction record. Most listed defects have been resolved or
-  superseded.
-
 ## ADRs
 
 - [ADR-001: Current Canonical Architecture and Supported Interfaces](./adr/ADR-001-current-canonical-architecture-and-supported-interfaces.md)
@@ -49,14 +35,12 @@ recommendation-model, and dashboard-view correction work.
 - [Planned Features](./PLANNED_FEATURES.md)
   Future roadmap items that are intentionally not part of the current implementation.
 
-## Reviews
+## Archive
 
-- [Project Review - 2026-05-25](./PROJECT_REVIEW_2026-05-25.md)
-  Full repository review covering code, tests, docs, operations, and ADR/governance gaps.
-- [Cleanup Plan](./CLEANUP_PLAN.md)
-  Cleanup completion record and archive candidate.
-- [Model Redesign Backlog](./MODEL_REDESIGN_BACKLOG.md)
-  Model redesign reconciliation and current validation backlog.
+- [Architecture Redesign Proposal](./archive/ARCHITECTURE_REDESIGN_PROPOSAL.md)
+  Historical proposal and future architecture reference. It is not current implementation authority.
+- [Project Review - 2026-05-25](./archive/PROJECT_REVIEW_2026-05-25.md)
+  Historical repository review retained for context.
 
 ## Important Note
 
@@ -72,5 +56,6 @@ source of truth, including:
 - the fact that the project is currently single-source in normal operation
 - the fact that the CLI is intentionally trimmed to aligned commands
 - the current dashboard semantic views
+- the current Superset dashboards
 - the current distinction between daily recommendations and weekly backtest
   artifacts

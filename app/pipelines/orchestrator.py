@@ -31,7 +31,13 @@ from app.services.processors import DataValidator, DataTransformer
 from app.services.processors.reconciliation import ReconciliationEngine
 from app.services.indicators import IndicatorCalculator
 from app.services.alerts import AlertEvaluator, AlertNotifier
-from app.services.advisory import StockScreener
+from app.services.advisory import ProductionPortfolioPolicy, StockScreener
+from app.services.reference_data import (
+    UNKNOWN_SECTOR_NAME,
+    choose_sector_name,
+    is_unknown_sector,
+    load_stock_sector_map,
+)
 from app.utils import get_logger
 from app.utils.exceptions import DataValidationError
 
@@ -1263,9 +1269,34 @@ class PipelineOrchestrator:
         try:
             with self.db.get_session() as session:
                 stock_repo = StockRepository(session)
+                try:
+                    sector_map = load_stock_sector_map()
+                except FileNotFoundError as exc:
+                    sector_map = {}
+                    self.logger.warning(
+                        "Stock sector reference map unavailable; falling back to source sectors",
+                        extra={"error": str(exc)}
+                    )
+
+                def get_or_create_sector(sector_name: str) -> DimSector:
+                    sector = session.query(DimSector).filter(
+                        DimSector.sector_name == sector_name
+                    ).first()
+                    if sector:
+                        return sector
+
+                    sector = DimSector(
+                        sector_name=sector_name,
+                        description=f"{sector_name} sector",
+                    )
+                    session.add(sector)
+                    session.flush()
+                    return sector
                 
                 # Get unique stocks from data
-                # Note: Some sources (Afrimarket) don't provide sector - use existing or default
+                # Note: Afrimarket does not currently provide reliable sector
+                # metadata, so curated reference data protects master data from
+                # being degraded back to Unknown during daily runs.
                 required_cols = ['stock_code', 'company_name', 'exchange']
                 unique_stocks = data[required_cols].drop_duplicates()
                 
@@ -1281,29 +1312,39 @@ class PipelineOrchestrator:
                         stock = stock_repo.get_by_code(row['stock_code'])
                         
                         if stock:
-                            # Update if needed (only company name, keep existing sector)
+                            update_values = {}
                             if stock.company_name != row['company_name']:
-                                stock_repo.update(
-                                    stock,
-                                    company_name=row['company_name']
-                                )
+                                update_values["company_name"] = row['company_name']
+
+                            existing_sector_name = (
+                                stock.sector.sector_name if stock.sector else None
+                            )
+                            sector_name = choose_sector_name(
+                                row['stock_code'],
+                                sector_map,
+                                existing_sector_name=existing_sector_name,
+                                source_sector_name=row.get('sector'),
+                            )
+                            if (
+                                is_unknown_sector(existing_sector_name)
+                                and not is_unknown_sector(sector_name)
+                            ):
+                                sector = get_or_create_sector(sector_name)
+                                if stock.sector_id != sector.sector_id:
+                                    update_values["sector_id"] = sector.sector_id
+
+                            if update_values:
+                                stock_repo.update(stock, **update_values)
                                 loaded_count += 1
                         else:
-                            # New stock - need sector
-                            sector_name = row.get('sector') or 'Unknown'  # Default sector if not provided
-                            
-                            # Get or create sector
-                            sector = session.query(DimSector).filter(
-                                DimSector.sector_name == sector_name
-                            ).first()
-                            
-                            if not sector:
-                                sector = DimSector(
-                                    sector_name=sector_name,
-                                    description=f"{sector_name} sector"
-                                )
-                                session.add(sector)
-                                session.flush()  # Get sector_id
+                            sector_name = choose_sector_name(
+                                row['stock_code'],
+                                sector_map,
+                                source_sector_name=row.get('sector'),
+                            )
+                            sector = get_or_create_sector(
+                                sector_name or UNKNOWN_SECTOR_NAME
+                            )
                             
                             # Create stock
                             stock_repo.create_stock(
@@ -1771,6 +1812,7 @@ class PipelineOrchestrator:
                     strategy_profile=self.config.recommendation_profile,
                 )
                 rec_repo = RecommendationRepository(session)
+                portfolio_policy = ProductionPortfolioPolicy()
                 
                 # Generate recommendations
                 recommendations = screener.generate_recommendations(
@@ -1778,20 +1820,55 @@ class PipelineOrchestrator:
                     stock_codes=stock_codes,
                     strategy_profile=self.config.recommendation_profile,
                 )
+                open_positions = portfolio_policy.count_open_positions(
+                    session,
+                    recommendation_date=execution_date,
+                    profile=self.config.recommendation_profile,
+                )
+                recommendations = portfolio_policy.apply(
+                    recommendations,
+                    existing_open_positions=open_positions,
+                )
+
+                if stock_codes is None:
+                    deleted = rec_repo.delete_recommendations_for_date_profile(
+                        recommendation_date=execution_date,
+                        profile=self.config.recommendation_profile,
+                    )
+                    if deleted:
+                        self.logger.info(
+                            f"Deleted {deleted} existing recommendation rows "
+                            f"for {execution_date} before full regeneration",
+                            extra={
+                                "deleted_recommendations": deleted,
+                                "recommendation_date": str(execution_date),
+                            },
+                        )
                 
                 if recommendations:
                     # Save to database
                     saved = rec_repo.create_recommendations_bulk(recommendations)
+                    approved = sum(
+                        1
+                        for rec in recommendations
+                        if rec.portfolio_approved
+                    )
                     
                     self.logger.info(
-                        f"Generated {saved} screening signals",
-                        extra={"recommendations": saved}
+                        f"Generated {saved} screening signals; "
+                        f"{approved} portfolio-approved",
+                        extra={
+                            "recommendations": saved,
+                            "portfolio_approved": approved,
+                            "open_positions_before": open_positions,
+                        }
                     )
                     
                     # Log top picks
                     buy_picks = [
                         r for r in recommendations
-                        if r.action_type.value in ('BUY', 'STRONG_BUY')
+                        if r.portfolio_approved
+                        and r.action_type.value in ('BUY', 'STRONG_BUY')
                     ]
                     
                     if buy_picks:

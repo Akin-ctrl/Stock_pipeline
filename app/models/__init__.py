@@ -8,6 +8,11 @@ from app.models.staging import StagingDailyPrice, StagingAuditLog
 from app.models.analytics import (
     BacktestRun,
     BacktestTrade,
+    BacktestPortfolioPosition,
+    BacktestPortfolioEquityPoint,
+    BacktestYearlyPerformance,
+    BacktestStockPerformance,
+    BacktestSectorPerformance,
     RecommendationSnapshot,
     DecisionSignal,
 )
@@ -27,6 +32,11 @@ __all__ = [
     "StagingAuditLog",
     "BacktestRun",
     "BacktestTrade",
+    "BacktestPortfolioPosition",
+    "BacktestPortfolioEquityPoint",
+    "BacktestYearlyPerformance",
+    "BacktestStockPerformance",
+    "BacktestSectorPerformance",
     "RecommendationSnapshot",
     "DecisionSignal",
 ]

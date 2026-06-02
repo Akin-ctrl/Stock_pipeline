@@ -347,6 +347,17 @@ class FactRecommendation(Base, TimestampMixin):
     # Indicator values at time of recommendation
     rsi_14 = Column(Numeric(5, 2), nullable=True)
     macd = Column(Numeric(18, 4), nullable=True)
+
+    # Portfolio-level production gate
+    portfolio_approved = Column(Boolean, default=False, nullable=False, index=True)
+    portfolio_rejection_reason = Column(String(50), nullable=True)
+    portfolio_rank = Column(Integer, nullable=True)
+    portfolio_position_size_pct = Column(Numeric(6, 4), nullable=True)
+    portfolio_policy_version = Column(String(50), nullable=True)
+    portfolio_open_positions_before = Column(Integer, nullable=True)
+    portfolio_available_slots_before = Column(Integer, nullable=True)
+    portfolio_max_concurrent_positions = Column(Integer, nullable=True)
+    portfolio_max_entries_per_day = Column(Integer, nullable=True)
     
     model_version = Column(String(50), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False, index=True)

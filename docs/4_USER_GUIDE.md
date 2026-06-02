@@ -96,7 +96,7 @@ The system supports:
 
 Notification behavior depends on environment configuration and alert results.
 
-## Weekly Backtest + Metabase
+## Weekly Backtest + Superset
 
 Weekly backtest results and recommendation snapshots are stored in:
 
@@ -130,13 +130,7 @@ Smoke test (fast run):
 docker compose exec -T airflow-webserver sh -lc "python /Stock_pipeline/scripts/weekly_backtest_report.py --smoke"
 ```
 
-Metabase runs on `http://localhost:3000` and can connect to the `stock_pipeline` database to visualize these tables.
-
-You can generate a starter dashboard template with:
-
-```bash
-python scripts/generate_metabase_seed.py
-```
+Superset runs on `http://localhost:8089` and connects to the `stock_pipeline` database through the semantic dashboard views.
 
 ## What The Recommendation Engine Currently Looks At
 

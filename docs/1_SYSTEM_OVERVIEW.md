@@ -88,14 +88,14 @@ Runtime stack in the repository:
 - Airflow scheduler
 - Airflow init job
 - PgAdmin
-- Metabase
+- Superset
 
 Operational surfaces:
 
 - Airflow for scheduled and manual pipeline execution
 - a trimmed CLI for aligned pipeline runs and inspection
 - direct database inspection for validation
-- Metabase or BI tools through dashboard semantic views
+- Superset dashboards and BI tools through dashboard semantic views
 
 ## Current Airflow Workflows
 

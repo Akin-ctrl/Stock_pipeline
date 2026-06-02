@@ -109,7 +109,7 @@ PROFILE_CONFIGS: Dict[RecommendationProfile, RecommendationProfileConfig] = {
             volume_weight=0.05,
         ),
         eligibility_config=EligibilityConfig(
-            min_price=1.0,
+            min_price=8.0,
             max_volatility=0.75,
             min_volume_ratio=0.8,
             rsi_min=40.0,
@@ -118,9 +118,11 @@ PROFILE_CONFIGS: Dict[RecommendationProfile, RecommendationProfileConfig] = {
             min_price_confidence_score=60.0,
             require_complete_data=True,
             require_official=False,
+            min_drawdown_20d_pct=1.0,
+            max_price_change_20d_pct=12.0,
         ),
         selection_config=SelectionConfig(
-            min_heuristic_score=55.0,
+            min_heuristic_score=70.0,
             min_signal_agreement=0.60,
             buy_only=True,
         ),
@@ -181,6 +183,15 @@ class StockRecommendation:
     technical_signal: TechnicalSignal
     stock_score: StockScore
     strategy_profile: str = RecommendationProfile.STEADY_20P_10D.value
+    portfolio_approved: bool = False
+    portfolio_rejection_reason: Optional[str] = None
+    portfolio_rank: Optional[int] = None
+    portfolio_position_size_pct: Optional[float] = None
+    portfolio_policy_version: Optional[str] = None
+    portfolio_open_positions_before: Optional[int] = None
+    portfolio_available_slots_before: Optional[int] = None
+    portfolio_max_concurrent_positions: Optional[int] = None
+    portfolio_max_entries_per_day: Optional[int] = None
 
     @property
     def confidence(self) -> float:
@@ -353,6 +364,11 @@ class StockScreener:
                 else min_confidence
             )
         )
+        effective_min_predicted_probability = (
+            self.profile_config.selection_config.min_predicted_probability
+            if min_predicted_probability is None
+            else min_predicted_probability
+        )
         
         self.logger.info(
             f"Generating recommendations for {recommendation_date}",
@@ -361,7 +377,7 @@ class StockScreener:
                 "profile": self.strategy_profile.value,
                 "min_heuristic_score": effective_min_score,
                 "min_signal_agreement": effective_min_signal_agreement,
-                "min_predicted_probability": min_predicted_probability,
+                "min_predicted_probability": effective_min_predicted_probability,
             }
         )
         
@@ -381,7 +397,7 @@ class StockScreener:
                     recommendation_date,
                     effective_min_score,
                     effective_min_signal_agreement,
-                    min_predicted_probability,
+                    effective_min_predicted_probability,
                 )
                 
                 if recommendation:
@@ -392,7 +408,7 @@ class StockScreener:
                     f"Failed to analyze {stock.stock_code}: {str(e)}"
                 )
         
-        # Prefer probability-aware ranking when a model prediction is available.
+        # Keep model probability diagnostic until ranking is proven out-of-sample.
         recommendations.sort(key=self._recommendation_rank_key, reverse=True)
         
         self.logger.info(
@@ -700,24 +716,23 @@ class StockScreener:
             filtered = [r for r in filtered if r.signal_type == signal_filter]
         filtered = [r for r in filtered if r.is_actionable]
         
-        # Sort by composite score using model probability when available,
-        # otherwise fall back to heuristic signal agreement.
+        # Sort by heuristic conviction first; probability remains diagnostic.
         filtered.sort(key=self._recommendation_rank_key, reverse=True)
         
         return filtered[:top_n]
 
     @staticmethod
     def _recommendation_rank_key(recommendation: StockRecommendation) -> float:
-        """Rank recommendations by predicted probability first, then heuristics."""
+        """Rank recommendations by heuristic conviction, with probability as tie-breaker."""
         probability = (
             recommendation.predicted_probability_10d_up
             if recommendation.predicted_probability_10d_up is not None
-            else -1.0
+            else 0.0
         )
         return (
-            probability * 1_000_000
-            + recommendation.heuristic_score * 1_000
-            + recommendation.signal_agreement
+            recommendation.heuristic_score * 1_000
+            + recommendation.signal_agreement * 100
+            + probability
         )
 
     @staticmethod

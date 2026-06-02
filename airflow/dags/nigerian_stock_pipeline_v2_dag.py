@@ -27,6 +27,7 @@ import pendulum
 from airflow.decorators import dag
 from airflow.operators.python import PythonOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.timetables.trigger import CronTriggerTimetable
 from airflow.models.baseoperator import chain
 from sqlalchemy import text
 
@@ -479,7 +480,7 @@ def generate_daily_summary_v2(**context) -> str:
 @dag(
     dag_id="nigerian_stock_pipeline_v2",
     description="V2: Afrimarket ETL pipeline with staging, reconciliation, alerts and recommendations",
-    schedule="0 17 * * 1-5",  # 5PM Africa/Lagos, Monday-Friday
+    schedule=CronTriggerTimetable("0 17 * * 1-5", timezone=LOCAL_TZ),
     start_date=pendulum.datetime(2026, 1, 23, tz=LOCAL_TZ),
     catchup=False,  # Don't backfill - V2 is new
     max_active_runs=1,  # Only one pipeline run at a time
@@ -489,7 +490,7 @@ def generate_daily_summary_v2(**context) -> str:
     doc_md=__doc__,
     default_view="graph",
     orientation="LR",  # Left-to-right graph layout
-    is_paused_upon_creation=True,  # Start paused - enable when ready
+    is_paused_upon_creation=False,
 )
 def nigerian_stock_pipeline_v2_dag():
     """

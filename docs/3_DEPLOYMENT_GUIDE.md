@@ -6,7 +6,7 @@ The current `docker-compose.yml` defines these services:
 
 - `postgres`
 - `pgadmin`
-- `metabase`
+- `superset`
 - `app`
 - `airflow-webserver`
 - `airflow-scheduler`
@@ -17,7 +17,7 @@ The current `docker-compose.yml` defines these services:
 - PostgreSQL: `5433`
 - PgAdmin: `5051`
 - Airflow UI: `8080`
-- Metabase: `3000`
+- Superset: `8089`
 
 ## Start The Stack
 

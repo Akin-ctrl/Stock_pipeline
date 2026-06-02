@@ -125,18 +125,8 @@ Supported alert rule types: `PRICE_MOVEMENT`, `MA_CROSSOVER`, `VOLATILITY`, `VOL
 
 ---
 
-## Stack
-
-| Component | Technology |
-|---|---|
-| Orchestration | Apache Airflow |
-| Database | PostgreSQL 16 |
-| Application | Python (SQLAlchemy, layered service architecture) |
-| Dashboard | Metabase |
-| DB Admin | PgAdmin |
-| Containerisation | Docker Compose |
-
----
+- [Docs Index](./docs/README.md)
+- [Planned Features](./docs/PLANNED_FEATURES.md)
 
 ## Quick Start
 
@@ -151,17 +141,13 @@ docker compose up -d --build
 docker compose ps
 ```
 
-### Service ports
-
-| Service | Port |
-|---|---|
-| Airflow UI | `http://localhost:8080` |
-| Metabase | `http://localhost:3000` |
-| PgAdmin | `http://localhost:5051` |
-| PostgreSQL | `localhost:5433` |
 
 ### Validate deployment
 
+- Airflow UI: `http://localhost:8080`
+- PostgreSQL: `localhost:5433`
+- PgAdmin: `http://localhost:5051`
+- Superset: `http://localhost:8089`
 Once the stack is up, confirm the following before running the pipeline:
 
 1. PostgreSQL is healthy
@@ -214,18 +200,17 @@ docker compose exec -T airflow-webserver sh -lc \
 
 Smoke test (30 days, subset):
 
+## License
+
+This project is licensed under the Apache License 2.0. See [LICENSE](./LICENSE).
+
+## Weekly Backtest + Dashboard
 ```bash
 docker compose exec -T airflow-webserver sh -lc \
   "python /Stock_pipeline/scripts/weekly_backtest_report.py --smoke"
 ```
 
-Generate Metabase seed dashboard:
 
-```bash
-python scripts/generate_metabase_seed.py
-```
-
----
 
 ## Environment Variables
 
@@ -239,10 +224,14 @@ POSTGRES_USER
 POSTGRES_PASSWORD
 ```
 
+Then open Superset at `http://localhost:8089` to visualize:
 Email and Slack notification variables are also supported. See `.env.example` for the full reference.
 
 ---
 
+## Next Direction
+
+The current(ongoing) next direction is:
 ## Common Commands
 
 ```bash

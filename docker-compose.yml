@@ -55,21 +55,108 @@ services:
           cpus: '0.1'
           memory: 128M
 
-  metabase:
-    image: metabase/metabase:latest
-    container_name: stock_pipeline_metabase_v2
+  superset:
+    build:
+      context: .
+      dockerfile: superset/Dockerfile
+    image: stock_pipeline_superset:4.1.2
+    container_name: stock_pipeline_superset_v2
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      - MB_DB_FILE=/metabase-data/metabase.db
+      - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-stock_pipeline_superset_secret_key_change_me}
+      - SUPERSET_LOAD_EXAMPLES=no
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
     ports:
-      - "3000:3000"
+      - "8089:8088"
     volumes:
-      - metabase_data:/metabase-data
+      - superset_home:/app/superset_home
+    depends_on:
+      postgres:
+        condition: service_healthy
+      superset-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - stock_network
+    command: superset run -h 0.0.0.0 -p 8088
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  superset-init:
+    build:
+      context: .
+      dockerfile: superset/Dockerfile
+    image: stock_pipeline_superset:4.1.2
+    container_name: stock_pipeline_superset_init_v2
+    env_file:
+      - .env
+    environment:
+      - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-stock_pipeline_superset_secret_key_change_me}
+      - SUPERSET_LOAD_EXAMPLES=no
+      - SUPERSET_ADMIN_USERNAME=${SUPERSET_ADMIN_USERNAME:-admin}
+      - SUPERSET_ADMIN_PASSWORD=${SUPERSET_ADMIN_PASSWORD:-admin}
+      - SUPERSET_ADMIN_FIRSTNAME=${SUPERSET_ADMIN_FIRSTNAME:-Stock}
+      - SUPERSET_ADMIN_LASTNAME=${SUPERSET_ADMIN_LASTNAME:-Pipeline}
+      - SUPERSET_ADMIN_EMAIL=${SUPERSET_ADMIN_EMAIL:-admin@stockpipeline.local}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+    volumes:
+      - superset_home:/app/superset_home
     depends_on:
       postgres:
         condition: service_healthy
     networks:
       - stock_network
+    entrypoint: /bin/bash -c
+    command: >
+      "superset db upgrade &&
+      superset fab create-admin
+      --username $$SUPERSET_ADMIN_USERNAME
+      --firstname $$SUPERSET_ADMIN_FIRSTNAME
+      --lastname $$SUPERSET_ADMIN_LASTNAME
+      --email $$SUPERSET_ADMIN_EMAIL
+      --password $$SUPERSET_ADMIN_PASSWORD || true &&
+      superset init"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  superset-bootstrap:
+    build:
+      context: .
+      dockerfile: superset/Dockerfile
+    image: stock_pipeline_superset:4.1.2
+    container_name: stock_pipeline_superset_bootstrap_v2
+    env_file:
+      - .env
+    environment:
+      - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-stock_pipeline_superset_secret_key_change_me}
+      - SUPERSET_LOAD_EXAMPLES=no
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+    volumes:
+      - superset_home:/app/superset_home
+    depends_on:
+      postgres:
+        condition: service_healthy
+      superset-init:
+        condition: service_completed_successfully
+    networks:
+      - stock_network
+    command: python /app/bootstrap_superset.py
     deploy:
       resources:
         limits:
@@ -257,6 +344,6 @@ networks:
 
 volumes:
   postgres_data:
-  metabase_data:
+  superset_home:
   pgadmin_data:
   airflow_logs_v2:
