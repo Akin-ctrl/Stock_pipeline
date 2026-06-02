@@ -39,7 +39,7 @@ fact_daily_prices
                     │
                     ▼
           Dashboard semantic views
-          (Metabase / any BI tool)
+          (Superset / any BI tool)
 ```
 
 The application layer is structured in six explicit layers: configuration, SQLAlchemy models, repository, service, pipeline orchestration, and Airflow DAGs. The staging design is built for future multi-source reconciliation even though the current ingestion path is single-source.
@@ -200,10 +200,6 @@ docker compose exec -T airflow-webserver sh -lc \
 
 Smoke test (30 days, subset):
 
-## License
-
-This project is licensed under the Apache License 2.0. See [LICENSE](./LICENSE).
-
 ## Weekly Backtest + Dashboard
 ```bash
 docker compose exec -T airflow-webserver sh -lc \
@@ -229,9 +225,18 @@ Email and Slack notification variables are also supported. See `.env.example` fo
 
 ---
 
-## Next Direction
+## Documentation
 
-The current(ongoing) next direction is:
+| Document | Contents |
+|---|---|
+| [System Overview](docs/1_SYSTEM_OVERVIEW.md) | What the system does, data model, current scope |
+| [Technical Architecture](docs/2_TECHNICAL_ARCHITECTURE.md) | Layer breakdown, schema detail, service classes |
+| [Deployment Guide](docs/3_DEPLOYMENT_GUIDE.md) | Docker setup, DAG reference, operational commands |
+| [User Guide](docs/4_USER_GUIDE.md) | How to use the pipeline, dashboard views, CLI |
+| [Architecture Redesign Proposal](docs/ARCHITECTURE_REDESIGN_PROPOSAL.md) | Multi-source expansion roadmap |
+| [Schema Transition Map](docs/SCHEMA_TRANSITION_MAP.md) | Schema evolution and migration reference |
+| [Model Redesign Backlog](docs/MODEL_REDESIGN_BACKLOG.md) | Recommendation model improvement backlog |
+
 ## Common Commands
 
 ```bash
@@ -247,33 +252,19 @@ docker compose exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
 docker compose restart airflow-scheduler
 docker compose restart app
 ```
-
 ---
-
-## Documentation
-
-| Document | Contents |
-|---|---|
-| [System Overview](docs/1_SYSTEM_OVERVIEW.md) | What the system does, data model, current scope |
-| [Technical Architecture](docs/2_TECHNICAL_ARCHITECTURE.md) | Layer breakdown, schema detail, service classes |
-| [Deployment Guide](docs/3_DEPLOYMENT_GUIDE.md) | Docker setup, DAG reference, operational commands |
-| [User Guide](docs/4_USER_GUIDE.md) | How to use the pipeline, dashboard views, CLI |
-| [Architecture Redesign Proposal](docs/ARCHITECTURE_REDESIGN_PROPOSAL.md) | Multi-source expansion roadmap |
-| [Schema Transition Map](docs/SCHEMA_TRANSITION_MAP.md) | Schema evolution and migration reference |
-| [Model Redesign Backlog](docs/MODEL_REDESIGN_BACKLOG.md) | Recommendation model improvement backlog |
-
----
-
-## Roadmap
-
+## Next Direction
+The current(ongoing) next direction is:
 - Multi-source reconciliation (official NGX data, paid feeds)
 - Corporate actions and fundamentals ingestion
 - Evidence-based recommendation threshold calibration
 - Dashboard presentation layer polish
 - Orchestrator refactor into cleaner stage services
 
+## License
+
+This project is licensed under the Apache License 2.0. See [LICENSE](./LICENSE).
 ---
 
-## Scope Note
 
 The current system is a **market-data and screening platform**, not a fully validated automated investing engine. Recommendations are screening candidates for manual review. Validate outputs at the table, view, log, and backtest-result level before drawing conclusions from dashboard displays.
