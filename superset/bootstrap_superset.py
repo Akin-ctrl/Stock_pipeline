@@ -59,6 +59,12 @@ DATASETS = [
         "Current approved and rejected recommendation candidates.",
     ),
     DatasetConfig(
+        "vw_weekly_recommendation_board",
+        "Weekly Recommendation Board",
+        "week_end_date",
+        "Weekly candidate board for watchlist and setup-monitoring decisions.",
+    ),
+    DatasetConfig(
         "vw_recommendation_board",
         "Recommendation History",
         "recommendation_date",
@@ -363,6 +369,7 @@ def _bar_params(
 def _chart_configs(dataset_refs: dict[str, str]) -> list[ChartConfig]:
     command = dataset_refs["vw_dashboard_command_center"]
     daily = dataset_refs["vw_daily_recommendation_board"]
+    weekly = dataset_refs["vw_weekly_recommendation_board"]
     history = dataset_refs["vw_recommendation_board"]
     market = dataset_refs["vw_market_overview"]
     sector = dataset_refs["vw_sector_performance"]
@@ -672,6 +679,67 @@ def _chart_configs(dataset_refs: dict[str, str]) -> list[ChartConfig]:
             "Short preview of current recommendations.",
             width=6,
             height=30,
+        ),
+        ChartConfig(
+            "Weekly Recommendation Board",
+            "vw_weekly_recommendation_board",
+            "table",
+            _table_params(
+                weekly,
+                [
+                    "rank",
+                    "weekly_status",
+                    "stock_code",
+                    "company_name",
+                    "sector_name",
+                    "action_type",
+                    "heuristic_score",
+                    "signal_agreement",
+                    "rejection_reason",
+                    "current_price",
+                    "price_change_20d",
+                    "drawdown_20d_pct",
+                    "volume_ratio",
+                ],
+                "week_end_date",
+                row_limit=50,
+                server_page_length=15,
+            ),
+            "Weekly watchlist candidates ranked by model score with daily gate context.",
+            width=12,
+            height=46,
+        ),
+        ChartConfig(
+            "Weekly Status Mix",
+            "vw_weekly_recommendation_board",
+            "echarts_timeseries_bar",
+            _bar_params(
+                weekly,
+                "weekly_status",
+                _sql_metric("COUNT(*)", "Candidates"),
+                [],
+                None,
+                row_limit=20,
+            ),
+            "Weekly candidates grouped by action label.",
+            width=6,
+            height=34,
+        ),
+        ChartConfig(
+            "Weekly Sector Mix",
+            "vw_weekly_recommendation_board",
+            "echarts_timeseries_bar",
+            _bar_params(
+                weekly,
+                "sector_name",
+                _sql_metric("COUNT(*)", "Candidates"),
+                ["weekly_status"],
+                None,
+                row_limit=30,
+            ),
+            "Sector concentration of weekly candidates.",
+            width=6,
+            height=34,
         ),
         ChartConfig(
             "Rejection Reasons",
@@ -1143,6 +1211,20 @@ DASHBOARDS = [
             "Probability vs Signal Agreement",
         ),
         row_message="Trading blotter for the current advisory run.",
+    ),
+    DashboardConfig(
+        "Weekly Recommendation Board",
+        "weekly-recommendation-board",
+        "Weekly watchlist workspace for slower setups, pullback waits, volume waits, and high-risk candidates.",
+        (
+            "Weekly Recommendation Board",
+            "Weekly Status Mix",
+            "Weekly Sector Mix",
+            "Recommendation Board",
+            "Market Breadth",
+            "Sector Pulse",
+        ),
+        row_message="Weekly candidates are not automatic buys; each label explains what must improve before daily approval.",
     ),
     DashboardConfig(
         "Market & Sector Pulse",
