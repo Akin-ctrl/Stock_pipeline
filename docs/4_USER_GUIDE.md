@@ -96,7 +96,7 @@ The system supports:
 
 Notification behavior depends on environment configuration and alert results.
 
-## Weekly Backtest + Superset
+## Weekly Backtest, Weekly Recommendations + Superset
 
 Weekly backtest results and recommendation snapshots are stored in:
 
@@ -106,10 +106,13 @@ Weekly backtest results and recommendation snapshots are stored in:
 - `decision_signals`
 
 Daily recommendations are exposed through `vw_daily_recommendation_board`.
+Weekly watchlist recommendations are exposed through
+`vw_weekly_recommendation_board`.
 
 For dashboard work, prefer semantic views first:
 
 - `vw_daily_recommendation_board`
+- `vw_weekly_recommendation_board`
 - `vw_recommendation_board`
 - `vw_model_health`
 - `vw_backtest_equity_curve`
@@ -122,6 +125,12 @@ To populate the tables once:
 
 ```bash
 docker compose exec -T airflow-webserver sh -lc "python /Stock_pipeline/scripts/weekly_backtest_report.py"
+```
+
+To rebuild the weekly candidate board once:
+
+```bash
+docker compose exec -T airflow-webserver sh -lc "python /Stock_pipeline/scripts/weekly_recommendations.py --strategy-profile steady_20p_10d --disable-probability --top-n 15 --min-score 68"
 ```
 
 Smoke test (fast run):

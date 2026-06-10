@@ -63,7 +63,8 @@ Current characteristics from the DAG definition:
 - dag id: `weekly_steady_backtest`
 - schedule: `0 20 * * 5`
 - timezone intent: 8:00 PM Africa/Lagos on Fridays
-- purpose: refresh weekly steady-profile backtest and snapshot artifacts
+- purpose: refresh weekly steady-profile backtest artifacts and then rebuild the weekly recommendation board
+- task order: `run_weekly_backtest` then `run_weekly_recommendations`
 
 ### Manual Backfill DAG
 
@@ -161,7 +162,7 @@ The repository can still be deployed to a VM or cloud host using Docker Compose,
 6. `daily_steady_snapshot` is present in Airflow
 7. `weekly_steady_backtest` is present in Airflow
 8. app container can import project code
-9. dashboard semantic views exist after migrations are applied
+9. dashboard semantic views exist after migrations are applied, including `vw_weekly_recommendation_board`
 
 ## Current Caveat
 
