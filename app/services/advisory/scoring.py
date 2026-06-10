@@ -452,7 +452,9 @@ class StockScorer:
             return 50.0
         
         # Higher volume on uptrends is positive
-        price_change = indicators.get('price_change_pct', 0)
+        price_change = indicators.get('price_change_pct')
+        if price_change is None:
+            price_change = 0
         
         if price_change > 0:
             # Upward price movement

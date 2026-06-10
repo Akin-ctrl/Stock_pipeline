@@ -63,6 +63,74 @@ def test_selection_evaluator_applies_action_and_threshold_rules():
     assert rejected_missing_probability.rejection_reason == "missing_predicted_probability"
 
 
+def test_selection_evaluator_uses_config_thresholds_when_overrides_are_none():
+    evaluator = RecommendationSelectionEvaluator(
+        SelectionConfig(
+            min_heuristic_score=70.0,
+            min_signal_agreement=0.60,
+            buy_only=True,
+        )
+    )
+
+    rejected_score = evaluator.evaluate(
+        action_value="BUY",
+        heuristic_score=69.0,
+        signal_agreement=0.75,
+        predicted_probability_10d_up=None,
+        min_heuristic_score=None,
+        min_signal_agreement=None,
+        min_predicted_probability=None,
+    )
+    rejected_signal = evaluator.evaluate(
+        action_value="BUY",
+        heuristic_score=75.0,
+        signal_agreement=0.59,
+        predicted_probability_10d_up=None,
+        min_heuristic_score=None,
+        min_signal_agreement=None,
+        min_predicted_probability=None,
+    )
+
+    assert rejected_score.selected is False
+    assert rejected_score.rejection_reason == "below_min_heuristic_score"
+    assert rejected_signal.selected is False
+    assert rejected_signal.rejection_reason == "below_min_signal_agreement"
+
+
+def test_selection_evaluator_rejects_missing_candidate_metrics():
+    evaluator = RecommendationSelectionEvaluator(
+        SelectionConfig(
+            min_heuristic_score=70.0,
+            min_signal_agreement=0.60,
+            buy_only=True,
+        )
+    )
+
+    missing_score = evaluator.evaluate(
+        action_value="BUY",
+        heuristic_score=None,
+        signal_agreement=0.75,
+        predicted_probability_10d_up=None,
+        min_heuristic_score=None,
+        min_signal_agreement=None,
+        min_predicted_probability=None,
+    )
+    missing_signal = evaluator.evaluate(
+        action_value="BUY",
+        heuristic_score=75.0,
+        signal_agreement=None,
+        predicted_probability_10d_up=None,
+        min_heuristic_score=None,
+        min_signal_agreement=None,
+        min_predicted_probability=None,
+    )
+
+    assert missing_score.selected is False
+    assert missing_score.rejection_reason == "missing_heuristic_score"
+    assert missing_signal.selected is False
+    assert missing_signal.rejection_reason == "missing_signal_agreement"
+
+
 def test_recommendation_rank_key_keeps_probability_diagnostic():
     stronger_heuristic = SimpleNamespace(
         heuristic_score=75.0,

@@ -108,7 +108,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidate-min-price", type=float, default=8.0)
     parser.add_argument("--candidate-min-score", type=float, default=70.0)
     parser.add_argument("--candidate-min-signal-agreement", type=float, default=0.60)
-    parser.add_argument("--strategy-profile", default="steady_20p_10d")
+    parser.add_argument(
+        "--strategy-profile",
+        default="steady_20p_10d",
+        choices=["steady_20p_10d", "steady_20p_10d_v2"],
+    )
     parser.add_argument("--round-trip-cost-pct", type=float, default=0.20)
     parser.add_argument("--max-abs-gross-return-pct", type=float, default=50.0)
     parser.add_argument("--min-score", type=float, default=None)

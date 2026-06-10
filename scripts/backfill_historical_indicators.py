@@ -19,6 +19,9 @@ from app.repositories import IndicatorRepository, PriceRepository, StockReposito
 from app.services.indicators import IndicatorCalculator
 
 
+DEFAULT_WARMUP_CALENDAR_DAYS = 3650
+
+
 def _parse_date(value: Optional[str]) -> Optional[date]:
     if not value:
         return None
@@ -33,6 +36,18 @@ def _parse_date(value: Optional[str]) -> Optional[date]:
 def _parse_stocks(value: str) -> Optional[list[str]]:
     stocks = [code.strip().upper() for code in value.split(",") if code.strip()]
     return stocks or None
+
+
+def _history_start_for(
+    start_date: Optional[date],
+    warmup_calendar_days: int,
+) -> Optional[date]:
+    """Return a calendar warmup start that supports sparsely traded stocks."""
+    if start_date is None:
+        return None
+    if warmup_calendar_days < 0:
+        raise ValueError("warmup_calendar_days must be non-negative")
+    return start_date - timedelta(days=warmup_calendar_days)
 
 
 def _price_rows(prices: Iterable[object]) -> list[dict]:
@@ -55,6 +70,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stocks", default="", help="Comma-separated stock codes. Defaults to all active stocks.")
     parser.add_argument("--min-confidence", type=float, default=60.0, help="Minimum price confidence score.")
     parser.add_argument("--require-complete", action="store_true", help="Require complete daily price rows.")
+    parser.add_argument(
+        "--warmup-calendar-days",
+        type=int,
+        default=DEFAULT_WARMUP_CALENDAR_DAYS,
+        help=(
+            "Calendar days of trusted price history to load before start-date. "
+            "Sparse NGX names need a long warmup to reach the 90-price indicator window."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Calculate counts without writing rows.")
     return parser.parse_args()
 
@@ -67,8 +91,7 @@ def main() -> None:
     stock_codes = _parse_stocks(args.stocks)
 
     calculator = IndicatorCalculator()
-    warmup_days = 365
-    history_start = start_date - timedelta(days=warmup_days) if start_date else None
+    history_start = _history_start_for(start_date, args.warmup_calendar_days)
 
     db = get_db()
     db.engine.echo = False
@@ -82,6 +105,7 @@ def main() -> None:
         "dry_run": args.dry_run,
         "start_date": start_date.isoformat() if start_date else None,
         "end_date": end_date.isoformat(),
+        "warmup_calendar_days": args.warmup_calendar_days,
     }
 
     with db.get_session() as session:

@@ -274,6 +274,112 @@ class FactTechnicalIndicator(Base, TimestampMixin):
             return 'STRONG_SELL'
 
 
+class FactRecommendationAudit(Base, TimestampMixin):
+    """Per-stock audit trail for one recommendation generation run.
+
+    The production recommendation table intentionally stores only final
+    recommendations. This audit fact stores the full candidate funnel so zero
+    recommendation days remain explainable and dashboard-visible.
+    """
+
+    __tablename__ = 'fact_recommendation_audit'
+
+    audit_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    stock_id = Column(Integer, ForeignKey('dim_stocks.stock_id'), nullable=False)
+    recommendation_date = Column(Date, nullable=False, index=True)
+    profile = Column(String(50), nullable=False, default='steady_20p_10d', index=True)
+
+    price_date = Column(Date, nullable=True)
+    indicator_date = Column(Date, nullable=True)
+    current_price = Column(Numeric(18, 4), nullable=True)
+
+    stage_reached = Column(String(50), nullable=False)
+    rejection_reason = Column(String(100), nullable=True)
+    eligible = Column(Boolean, nullable=False, default=False)
+    selected = Column(Boolean, nullable=False, default=False)
+    candidate_tier = Column(String(20), nullable=False, default='blocked')
+    portfolio_approved = Column(Boolean, nullable=False, default=False)
+    portfolio_rejection_reason = Column(String(50), nullable=True)
+    portfolio_rank = Column(Integer, nullable=True)
+
+    action_type = Column(String(20), nullable=True)
+    technical_signal_type = Column(String(20), nullable=True)
+    signal_agreement = Column(Numeric(6, 4), nullable=True)
+    predicted_probability_10d_up = Column(Numeric(6, 4), nullable=True)
+    heuristic_score = Column(Numeric(6, 2), nullable=True)
+    heuristic_score_category = Column(String(20), nullable=True)
+
+    rsi_14 = Column(Numeric(5, 2), nullable=True)
+    volatility = Column(Numeric(10, 4), nullable=True)
+    volume_ratio = Column(Numeric(12, 4), nullable=True)
+    price_change_20d = Column(Numeric(10, 4), nullable=True)
+    drawdown_20d_pct = Column(Numeric(10, 4), nullable=True)
+    trusted_history_days = Column(Integer, nullable=True)
+    price_quality_flag = Column(String(20), nullable=True)
+    bar_status = Column(String(20), nullable=True)
+    has_complete_data = Column(Boolean, nullable=True)
+    is_official = Column(Boolean, nullable=True)
+
+    score_breakdown = Column(JSONB, default=dict)
+    indicators = Column(JSONB, default=dict)
+    model_version = Column(String(50), nullable=True)
+
+    stock = relationship("DimStock")
+
+    __table_args__ = (
+        CheckConstraint(
+            "stage_reached IN ("
+            "'stock_loaded', 'no_indicator', 'no_trusted_price', "
+            "'indicator_price_date_mismatch', 'scored', 'eligibility_failed', "
+            "'selection_failed', 'selected', 'portfolio_evaluated'"
+            ")",
+            name='chk_recommendation_audit_stage'
+        ),
+        CheckConstraint(
+            "candidate_tier IN ('approved', 'watchlist', 'avoid', 'blocked')",
+            name='chk_recommendation_audit_candidate_tier'
+        ),
+        CheckConstraint(
+            'signal_agreement IS NULL OR signal_agreement BETWEEN 0 AND 1',
+            name='chk_recommendation_audit_signal_agreement'
+        ),
+        CheckConstraint(
+            'predicted_probability_10d_up IS NULL OR '
+            'predicted_probability_10d_up BETWEEN 0 AND 1',
+            name='chk_recommendation_audit_predicted_probability'
+        ),
+        CheckConstraint(
+            'heuristic_score IS NULL OR heuristic_score BETWEEN 0 AND 100',
+            name='chk_recommendation_audit_heuristic_score'
+        ),
+        Index(
+            'ux_recommendation_audit_stock_date_profile',
+            'stock_id',
+            'recommendation_date',
+            'profile',
+            unique=True
+        ),
+        Index(
+            'ix_recommendation_audit_date_profile_stage',
+            'recommendation_date',
+            'profile',
+            'stage_reached'
+        ),
+        Index(
+            'ix_recommendation_audit_rejection_reason',
+            'rejection_reason'
+        ),
+    )
+
+    def __repr__(self) -> str:
+        """String representation."""
+        return (
+            f"<FactRecommendationAudit(id={self.audit_id}, "
+            f"stock_id={self.stock_id}, date={self.recommendation_date}, "
+            f"stage={self.stage_reached}, reason={self.rejection_reason})>"
+        )
+
+
 class FactRecommendation(Base, TimestampMixin):
     """Model-aligned recommendation fact table.
 

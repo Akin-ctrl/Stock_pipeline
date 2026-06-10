@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, desc, func
 from sqlalchemy import text
 
-from app.models import FactRecommendation, DimStock
+from app.models import FactRecommendation, FactRecommendationAudit, DimStock
 from app.repositories.base import BaseRepository
 
 if TYPE_CHECKING:
@@ -141,6 +141,90 @@ class RecommendationRepository(BaseRepository[FactRecommendation]):
 
         self.session.flush()
         return count
+
+    def replace_audit_entries(
+        self,
+        *,
+        recommendation_date: date,
+        profile: str,
+        audit_entries: List["RecommendationAuditEntry"],
+        full_snapshot: bool = True,
+    ) -> int:
+        """Replace one full recommendation audit snapshot idempotently."""
+        if not audit_entries:
+            if full_snapshot:
+                self.session.query(FactRecommendationAudit).filter(
+                    FactRecommendationAudit.recommendation_date == recommendation_date,
+                    FactRecommendationAudit.profile == profile,
+                ).delete(synchronize_session=False)
+            self.session.flush()
+            return 0
+
+        deduped: dict[int, "RecommendationAuditEntry"] = {}
+        for entry in audit_entries:
+            deduped[entry.stock_id] = entry
+
+        delete_query = self.session.query(FactRecommendationAudit).filter(
+            FactRecommendationAudit.recommendation_date == recommendation_date,
+            FactRecommendationAudit.profile == profile,
+        )
+        if not full_snapshot:
+            delete_query = delete_query.filter(
+                FactRecommendationAudit.stock_id.in_(list(deduped.keys()))
+            )
+        delete_query.delete(synchronize_session=False)
+
+        for entry in deduped.values():
+            self.session.add(self._build_audit_row(entry))
+
+        self.session.flush()
+        return len(deduped)
+
+    def _build_audit_row(
+        self,
+        entry: "RecommendationAuditEntry",
+    ) -> FactRecommendationAudit:
+        """Map a screener audit entry to the database audit fact."""
+        indicators = dict(entry.indicators or {})
+        score_breakdown = dict(entry.score_breakdown or {})
+
+        return FactRecommendationAudit(
+            stock_id=entry.stock_id,
+            recommendation_date=entry.recommendation_date,
+            profile=entry.profile,
+            price_date=entry.price_date,
+            indicator_date=entry.indicator_date,
+            current_price=_decimal_or_none(entry.current_price),
+            stage_reached=entry.stage_reached,
+            rejection_reason=entry.rejection_reason,
+            eligible=entry.eligible,
+            selected=entry.selected,
+            candidate_tier=entry.candidate_tier,
+            portfolio_approved=entry.portfolio_approved,
+            portfolio_rejection_reason=entry.portfolio_rejection_reason,
+            portfolio_rank=entry.portfolio_rank,
+            action_type=entry.action_type,
+            technical_signal_type=entry.technical_signal_type,
+            signal_agreement=_decimal_or_none(entry.signal_agreement),
+            predicted_probability_10d_up=_decimal_or_none(
+                entry.predicted_probability_10d_up
+            ),
+            heuristic_score=_decimal_or_none(entry.heuristic_score),
+            heuristic_score_category=entry.heuristic_score_category,
+            rsi_14=_decimal_or_none(indicators.get("rsi_14")),
+            volatility=_decimal_or_none(indicators.get("volatility")),
+            volume_ratio=_decimal_or_none(indicators.get("volume_ratio")),
+            price_change_20d=_decimal_or_none(indicators.get("price_change_20d")),
+            drawdown_20d_pct=_decimal_or_none(indicators.get("drawdown_20d_pct")),
+            trusted_history_days=indicators.get("trusted_history_days"),
+            price_quality_flag=indicators.get("price_quality_flag"),
+            bar_status=indicators.get("bar_status"),
+            has_complete_data=indicators.get("has_complete_data"),
+            is_official=indicators.get("is_official"),
+            indicators=indicators,
+            score_breakdown=score_breakdown,
+            model_version=entry.model_version,
+        )
 
     def _build_fact_recommendation(
         self,

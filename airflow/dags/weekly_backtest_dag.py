@@ -1,4 +1,4 @@
-"""Weekly backtest and recommendation snapshot for steady profile."""
+"""Weekly validation and recommendation board for the steady profile."""
 
 from datetime import timedelta
 
@@ -34,4 +34,15 @@ with DAG(
         ),
     )
 
-    run_backtest
+    run_weekly_recommendations = BashOperator(
+        task_id="run_weekly_recommendations",
+        bash_command=(
+            "python /Stock_pipeline/scripts/weekly_recommendations.py "
+            "--strategy-profile steady_20p_10d "
+            "--disable-probability "
+            "--top-n 15 "
+            "--min-score 68"
+        ),
+    )
+
+    run_backtest >> run_weekly_recommendations

@@ -2,7 +2,12 @@
 
 from app.models.base import Base, BaseModel, TimestampMixin
 from app.models.dimension import DimSector, DimStock
-from app.models.fact import FactDailyPrice, FactTechnicalIndicator, FactRecommendation
+from app.models.fact import (
+    FactDailyPrice,
+    FactTechnicalIndicator,
+    FactRecommendation,
+    FactRecommendationAudit,
+)
 from app.models.alert import AlertRule, AlertHistory
 from app.models.staging import StagingDailyPrice, StagingAuditLog
 from app.models.analytics import (
@@ -14,6 +19,7 @@ from app.models.analytics import (
     BacktestStockPerformance,
     BacktestSectorPerformance,
     RecommendationSnapshot,
+    WeeklyRecommendation,
     DecisionSignal,
 )
 
@@ -26,6 +32,7 @@ __all__ = [
     "FactDailyPrice",
     "FactTechnicalIndicator",
     "FactRecommendation",
+    "FactRecommendationAudit",
     "AlertRule",
     "AlertHistory",
     "StagingDailyPrice",
@@ -38,5 +45,6 @@ __all__ = [
     "BacktestStockPerformance",
     "BacktestSectorPerformance",
     "RecommendationSnapshot",
+    "WeeklyRecommendation",
     "DecisionSignal",
 ]

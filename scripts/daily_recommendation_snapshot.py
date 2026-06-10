@@ -61,6 +61,7 @@ def main() -> None:
     profile = RecommendationProfile.STEADY_20P_10D.value
 
     db = get_db()
+    db.engine.echo = False
     with db.get_session() as session:
         snapshot_date = _resolve_snapshot_date(session, args.snapshot_date)
         recommendations = (

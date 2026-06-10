@@ -15,6 +15,7 @@ from sqlalchemy import (
     TIMESTAMP,
     ForeignKey,
     Index,
+    CheckConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
@@ -281,6 +282,76 @@ class RecommendationSnapshot(Base, TimestampMixin):
         Index("idx_reco_snapshot_date", "snapshot_date"),
         Index("idx_reco_snapshot_stock", "stock_code"),
         Index("ux_reco_snapshot_run_stock", "run_id", "stock_code", unique=True),
+    )
+
+
+class WeeklyRecommendation(Base, TimestampMixin):
+    """Weekly candidate board sourced from recommendation audit snapshots."""
+
+    __tablename__ = "weekly_recommendations"
+
+    weekly_recommendation_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    week_start_date = Column(Date, nullable=False, index=True)
+    week_end_date = Column(Date, nullable=False, index=True)
+    recommendation_date = Column(Date, nullable=False, index=True)
+    profile = Column(String(50), nullable=False, index=True)
+
+    stock_id = Column(Integer, ForeignKey("dim_stocks.stock_id", ondelete="CASCADE"), nullable=False)
+    stock_code = Column(String(20), nullable=False)
+    company_name = Column(String(255), nullable=False)
+    sector_name = Column(String(100))
+
+    rank = Column(Integer, nullable=False)
+    weekly_status = Column(String(30), nullable=False, index=True)
+    candidate_tier = Column(String(20), nullable=False)
+    action_type = Column(String(20), nullable=False)
+    technical_signal_type = Column(String(20))
+    rejection_reason = Column(String(100))
+
+    signal_agreement = Column(Numeric(6, 4))
+    heuristic_score = Column(Numeric(6, 2), nullable=False)
+    current_price = Column(Numeric(18, 4), nullable=False)
+    rsi_14 = Column(Numeric(5, 2))
+    volatility = Column(Numeric(10, 4))
+    volume_ratio = Column(Numeric(12, 4))
+    price_change_20d = Column(Numeric(10, 4))
+    drawdown_20d_pct = Column(Numeric(10, 4))
+
+    rationale = Column(JSONB, default=list)
+    source = Column(String(50), nullable=False, default="recommendation_audit")
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+
+    stock = relationship("DimStock")
+
+    __table_args__ = (
+        CheckConstraint(
+            "weekly_status IN ("
+            "'APPROVED', 'WATCHLIST', 'WAIT_FOR_PULLBACK', "
+            "'WAIT_FOR_VOLUME', 'HIGH_RISK_WATCHLIST', 'SPECULATIVE_WATCHLIST'"
+            ")",
+            name="chk_weekly_recommendation_status",
+        ),
+        CheckConstraint(
+            "candidate_tier IN ('approved', 'watchlist')",
+            name="chk_weekly_recommendation_candidate_tier",
+        ),
+        CheckConstraint(
+            "action_type IN ('STRONG_BUY', 'BUY')",
+            name="chk_weekly_recommendation_action_type",
+        ),
+        CheckConstraint(
+            "rank > 0",
+            name="chk_weekly_recommendation_rank_positive",
+        ),
+        Index("idx_weekly_recommendation_week", "week_end_date", "profile"),
+        Index("idx_weekly_recommendation_stock", "stock_code"),
+        Index(
+            "ux_weekly_recommendation_week_profile_stock",
+            "week_end_date",
+            "profile",
+            "stock_id",
+            unique=True,
+        ),
     )
 
 

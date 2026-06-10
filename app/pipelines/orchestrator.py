@@ -1819,6 +1819,7 @@ class PipelineOrchestrator:
                     recommendation_date=execution_date,
                     stock_codes=stock_codes,
                     strategy_profile=self.config.recommendation_profile,
+                    capture_audit=True,
                 )
                 open_positions = portfolio_policy.count_open_positions(
                     session,
@@ -1828,6 +1829,22 @@ class PipelineOrchestrator:
                 recommendations = portfolio_policy.apply(
                     recommendations,
                     existing_open_positions=open_positions,
+                )
+                screener.apply_portfolio_audit(recommendations)
+
+                audit_rows = rec_repo.replace_audit_entries(
+                    recommendation_date=execution_date,
+                    profile=self.config.recommendation_profile,
+                    audit_entries=screener.last_audit_entries,
+                    full_snapshot=stock_codes is None,
+                )
+                self.logger.info(
+                    f"Persisted {audit_rows} recommendation audit rows",
+                    extra={
+                        "recommendation_audit_rows": audit_rows,
+                        "recommendation_date": str(execution_date),
+                        "profile": self.config.recommendation_profile,
+                    },
                 )
 
                 if stock_codes is None:
