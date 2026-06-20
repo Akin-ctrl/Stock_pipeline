@@ -289,6 +289,7 @@ def test_screener_populates_predicted_probability_when_history_is_sufficient(
 
     screener = StockScreener(
         db_session,
+        strategy_profile="steady_20p_10d_v2",
         probability_estimator=HistoricalLogisticProbabilityEstimator(
             db_session,
             min_training_rows=80,

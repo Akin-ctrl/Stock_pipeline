@@ -5,8 +5,9 @@ Tests alert rule evaluation, alert generation, and notification system.
 """
 
 import pytest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
+from sqlalchemy import text
 
 from app.models import AlertRule, AlertHistory
 from app.repositories import AlertRepository, StockRepository, PriceRepository, IndicatorRepository
@@ -65,19 +66,27 @@ class TestAlertEvaluator:
                 'price_date': date.today() - timedelta(days=2),
                 'close_price': base_price,
                 'volume': 1000000,
-                'source': 'test'
+                'source': 'test',
+                'change_1d_pct': Decimal('0.00'),
+                'bar_status': 'RECONCILED',
+                'data_quality_flag': 'GOOD',
+                'confidence_score': Decimal('85.00'),
             },
             {
                 'stock_id': stock_id,
                 'price_date': date.today() - timedelta(days=1),
                 'close_price': base_price * Decimal('1.06'),  # 6% increase
                 'volume': 1000000,
-                'source': 'test'
+                'source': 'test',
+                'change_1d_pct': Decimal('6.00'),
+                'bar_status': 'RECONCILED',
+                'data_quality_flag': 'GOOD',
+                'confidence_score': Decimal('85.00'),
             }
         ]
         
         for price_data in prices:
-            price_repo.upsert_price(price_data)
+            price_repo.upsert_price(**price_data)
         db_session.commit()
         
         # Create price movement rule (trigger on 5% change)
@@ -114,14 +123,25 @@ class TestAlertEvaluator:
         stock_id = stock.stock_id
         db_session.commit()
         
+        # Create trusted price row for calculation_date
+        price_repo = PriceRepository(db_session)
+        price_repo.upsert_price(
+            stock_id=stock_id,
+            price_date=date.today(),
+            close_price=Decimal("100.00"),
+            source="test",
+            bar_status="RECONCILED",
+            data_quality_flag="GOOD",
+            confidence_score=Decimal("85.00"),
+        )
+        
         # Create RSI indicator showing oversold condition
         indicator_data = {
             'stock_id': stock_id,
             'calculation_date': date.today(),
             'rsi_14': Decimal('25.0'),  # Oversold
-            'source': 'test'
         }
-        indicator_repo.save_indicators([indicator_data])
+        indicator_repo.bulk_save_indicators([indicator_data])
         db_session.commit()
         
         # Create RSI rule (trigger when RSI < 30)
@@ -161,19 +181,27 @@ class TestAlertEvaluator:
                 'price_date': date.today() - timedelta(days=1),
                 'close_price': Decimal('100.00'),
                 'volume': 1000000,
-                'source': 'test'
+                'source': 'test',
+                'change_1d_pct': Decimal('0.00'),
+                'bar_status': 'RECONCILED',
+                'data_quality_flag': 'GOOD',
+                'confidence_score': Decimal('85.00'),
             },
             {
                 'stock_id': stock_id,
                 'price_date': date.today(),
                 'close_price': Decimal('110.00'),  # 10% increase
                 'volume': 1000000,
-                'source': 'test'
+                'source': 'test',
+                'change_1d_pct': Decimal('10.00'),
+                'bar_status': 'RECONCILED',
+                'data_quality_flag': 'GOOD',
+                'confidence_score': Decimal('85.00'),
             }
         ]
         
         for price_data in prices:
-            price_repo.upsert_price(price_data)
+            price_repo.upsert_price(**price_data)
         db_session.commit()
         
         # Create rule
@@ -190,6 +218,7 @@ class TestAlertEvaluator:
         evaluator = AlertEvaluator(session=db_session)
         result1 = evaluator.evaluate_all_rules(evaluation_date=date.today())
         first_count = result1.alerts_generated
+        evaluator.save_alerts(result1.alerts)
         
         # Evaluate second time - should not create duplicates
         result2 = evaluator.evaluate_all_rules(evaluation_date=date.today())
@@ -204,15 +233,8 @@ class TestAlertEvaluator:
         stock_repo = StockRepository(db_session)
         alert_repo = AlertRepository(db_session)
         
-        # Create stock
+        # Stock is already created by sample_stocks fixture
         stock = sample_stocks[0]
-        stock_repo.create_stock(
-            stock_code=stock.stock_code,
-            company_name=stock.company_name,
-            sector_id=stock.sector_id,
-            exchange=stock.exchange
-        )
-        db_session.commit()
         
         # Create inactive rule
         rule = AlertRule(
@@ -237,11 +259,18 @@ class TestAlertEvaluator:
 class TestAlertRepository:
     """Test alert repository operations."""
     
-    def test_create_and_get_rule(self, db_session, sample_alert_rules):
+    def test_create_and_get_rule(self, db_session):
         """Test creating and retrieving alert rules."""
         alert_repo = AlertRepository(db_session)
         
-        rule = sample_alert_rules[0]
+        rule = AlertRule(
+            rule_name="Unique RSI Oversold",
+            rule_type="RSI",
+            rule_config='{"metric": "rsi_14", "operator": "<", "value": 30}',
+            threshold_value=Decimal("30.00"),
+            severity="WARNING",
+            is_active=True
+        )
         rule_id = alert_repo.create_rule(rule)
         db_session.commit()
         
@@ -251,15 +280,18 @@ class TestAlertRepository:
         assert retrieved is not None
         assert retrieved.rule_name == rule.rule_name
         assert retrieved.rule_type == rule.rule_type
-        assert retrieved.threshold_value == rule.threshold
+        assert retrieved.threshold_value == rule.threshold_value
     
-    def test_get_all_active_rules(self, db_session, sample_alert_rules):
+    def test_get_all_active_rules(self, db_session):
         """Test retrieving only active rules."""
         alert_repo = AlertRepository(db_session)
 
-        # Create mix of active and inactive rules
-        for i, rule in enumerate(sample_alert_rules):
-            rule.is_active = (i % 2 == 0)  # Alternate active/inactive
+        # Create mix of active and inactive rules with unique names
+        rules = [
+            AlertRule(rule_name="Active Rule 1", rule_type="RSI", is_active=True),
+            AlertRule(rule_name="Inactive Rule 2", rule_type="RSI", is_active=False),
+        ]
+        for rule in rules:
             alert_repo.create_rule(rule)
         db_session.commit()
         
@@ -271,52 +303,63 @@ class TestAlertRepository:
 
     def test_deduplicate_existing_rows(self, db_session, sample_sectors, sample_stocks, sample_alert_rules):
         """Duplicate alert rows should be collapsed to the newest row per stock/rule/date."""
+        from sqlalchemy import text
         alert_repo = AlertRepository(db_session)
         stock = sample_stocks[0]
         rule = sample_alert_rules[0]
         alert_date = date.today()
 
-        db_session.add_all([
-            AlertHistory(
-                stock_id=stock.stock_id,
-                rule_id=rule.rule_id,
-                alert_date=alert_date,
-                alert_type=rule.rule_type,
-                severity="WARNING",
-                message="older duplicate",
-            ),
-            AlertHistory(
-                stock_id=stock.stock_id,
-                rule_id=rule.rule_id,
-                alert_date=alert_date,
-                alert_type=rule.rule_type,
-                severity="WARNING",
-                message="newer duplicate",
-            ),
-        ])
+        # Temporarily drop unique constraint to insert duplicates
+        db_session.execute(text("DROP INDEX IF EXISTS ux_alert_history_stock_rule_date"))
         db_session.commit()
 
-        deleted = alert_repo.deduplicate_existing_rows()
-        db_session.commit()
+        try:
+            db_session.add_all([
+                AlertHistory(
+                    stock_id=stock.stock_id,
+                    rule_id=rule.rule_id,
+                    alert_date=alert_date,
+                    alert_type=rule.rule_type,
+                    severity="WARNING",
+                    message="older duplicate",
+                    alert_timestamp=datetime.now() - timedelta(minutes=5),
+                ),
+                AlertHistory(
+                    stock_id=stock.stock_id,
+                    rule_id=rule.rule_id,
+                    alert_date=alert_date,
+                    alert_type=rule.rule_type,
+                    severity="WARNING",
+                    message="newer duplicate",
+                    alert_timestamp=datetime.now(),
+                ),
+            ])
+            db_session.commit()
 
-        remaining = db_session.query(AlertHistory).filter(
-            AlertHistory.stock_id == stock.stock_id,
-            AlertHistory.rule_id == rule.rule_id,
-            AlertHistory.alert_date == alert_date,
-        ).all()
+            deleted = alert_repo.deduplicate_existing_rows()
+            db_session.commit()
 
-        assert deleted == 1
-        assert len(remaining) == 1
+            remaining = db_session.query(AlertHistory).filter(
+                AlertHistory.stock_id == stock.stock_id,
+                AlertHistory.rule_id == rule.rule_id,
+                AlertHistory.alert_date == alert_date,
+            ).all()
+
+            assert deleted == 1
+            assert len(remaining) == 1
+            assert remaining[0].message == "newer duplicate"
+        finally:
+            # Recreate unique constraint
+            db_session.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_alert_history_stock_rule_date ON alert_history(stock_id, rule_id, alert_date)"))
+            db_session.commit()
     
     def test_alert_exists(self, db_session, sample_sectors, sample_stocks, sample_alert_rules):
         """Test checking if alert exists."""
-        stock_repo = StockRepository(db_session)
         alert_repo = AlertRepository(db_session)
         
-        # Create stock and rule
-        stock_id = stock_repo.create_stock(sample_stocks[0])
-        rule_id = alert_repo.create_rule(sample_alert_rules[0])
-        db_session.commit()
+        # Use existing stock and rule from fixtures
+        stock_id = sample_stocks[0].stock_id
+        rule_id = sample_alert_rules[0].rule_id
         
         alert_date = date.today()
         
@@ -328,6 +371,7 @@ class TestAlertRepository:
             stock_id=stock_id,
             rule_id=rule_id,
             alert_date=alert_date,
+            alert_type=sample_alert_rules[0].rule_type,
             message='Test alert',
             severity='INFO'
         )
@@ -344,11 +388,11 @@ class TestAlertRepository:
         stock_repo = StockRepository(db_session)
         alert_repo = AlertRepository(db_session)
         
-        # Create stock and rule
+        # Use existing stock and rule from fixtures
         stock = sample_stocks[0]
         stock_id = stock.stock_id
-        rule_id = alert_repo.create_rule(sample_alert_rules[0])
-        db_session.commit()
+        rule = sample_alert_rules[0]
+        rule_id = rule.rule_id
         
         # Create alerts across different dates
         dates = [
@@ -362,6 +406,7 @@ class TestAlertRepository:
                 stock_id=stock_id,
                 rule_id=rule_id,
                 alert_date=alert_date,
+                alert_type=rule.rule_type,
                 message=f'Alert on {alert_date}',
                 severity='INFO'
             )

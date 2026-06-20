@@ -1,7 +1,7 @@
 from datetime import date
 from types import SimpleNamespace
 
-from scripts.weekly_recommendations import _candidate_rows, _week_start, _weekly_status
+from app.services.reports.weekly_recommendations import _candidate_rows, _week_start, _weekly_status
 
 
 def test_week_start_returns_monday_for_market_date():

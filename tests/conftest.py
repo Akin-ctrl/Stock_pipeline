@@ -236,7 +236,7 @@ def sample_alert_rules(db_session: Session):
         AlertRule(
             rule_name="RSI Oversold",
             rule_type="RSI",
-            condition_sql="rsi_14 < 30",
+            rule_config='{"metric": "rsi_14", "operator": "<", "value": 30}',
             threshold_value=Decimal("30.00"),
             severity="WARNING",
             is_active=True
@@ -244,7 +244,7 @@ def sample_alert_rules(db_session: Session):
         AlertRule(
             rule_name="RSI Overbought",
             rule_type="RSI",
-            condition_sql="rsi_14 > 70",
+            rule_config='{"metric": "rsi_14", "operator": ">", "value": 70}',
             threshold_value=Decimal("70.00"),
             severity="WARNING",
             is_active=True
@@ -252,7 +252,7 @@ def sample_alert_rules(db_session: Session):
         AlertRule(
             rule_name="Price Above SMA",
             rule_type="MA_CROSSOVER",
-            condition_sql="close_price > ma_30",
+            rule_config='{"metric": "close_price", "operator": ">", "compare_to": "ma_30"}',
             threshold_value=None,
             severity="INFO",
             is_active=True

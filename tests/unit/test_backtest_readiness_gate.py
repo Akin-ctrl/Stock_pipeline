@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from scripts.backtest_recommendations import _build_readiness_gate
+from app.services.backtesting.backtest_recommendations import _build_readiness_gate
 
 
 def _args() -> SimpleNamespace:

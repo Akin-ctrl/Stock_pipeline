@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from scripts.backfill_historical_indicators import (
+from app.services.data_operations.backfill_historical_indicators import (
     DEFAULT_WARMUP_CALENDAR_DAYS,
     _history_start_for,
 )

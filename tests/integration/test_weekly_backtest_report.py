@@ -13,7 +13,7 @@ from app.models import (
     BacktestTrade,
     RecommendationSnapshot,
 )
-from scripts.weekly_backtest_report import _replace_equivalent_run
+from app.services.reports.weekly_backtest import _replace_equivalent_run
 
 
 @pytest.mark.integration
