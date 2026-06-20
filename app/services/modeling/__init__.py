@@ -31,6 +31,7 @@ from app.services.modeling.probability_estimator import (
     LogisticProbabilityModel,
     NullProbabilityEstimator,
     ProbabilityEstimator,
+    MLflowProbabilityEstimator,
 )
 from app.services.modeling.bad_trade_risk import (
     BAD_TRADE_FEATURE_NAMES,
@@ -88,6 +89,7 @@ __all__ = [
     "PROBABILITY_FEATURE_NAMES",
     "ProbabilityBucketStat",
     "ProbabilityEstimator",
+    "MLflowProbabilityEstimator",
     "TrustCohortStat",
     "TrustFilterComparison",
     "TrustValidationReport",
