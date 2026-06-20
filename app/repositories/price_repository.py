@@ -363,6 +363,7 @@ class PriceRepository(BaseRepository[FactDailyPrice]):
                 'confidence_score': stmt.excluded.confidence_score,
                 'data_quality_flag': stmt.excluded.data_quality_flag,
                 'has_complete_data': stmt.excluded.has_complete_data,
+                'ingestion_timestamp': func.now(),
             }
         )
         
@@ -386,51 +387,48 @@ class PriceRepository(BaseRepository[FactDailyPrice]):
         This is a safe maintenance operation for rows that were loaded before the
         corrected completeness logic was introduced.
         """
-        conditions = []
-        params: Dict[str, Any] = {}
+        # Build filter using SQLAlchemy expressions — avoids f-string injection risk
+        # that existed when WHERE clauses were assembled via string concatenation.
+        from sqlalchemy import update as _update
+        from app.models.fact import FactDailyPrice as _FDP
 
-        if start_date is not None:
-            conditions.append("price_date >= :start_date")
-            params["start_date"] = start_date
-
-        if end_date is not None:
-            conditions.append("price_date <= :end_date")
-            params["end_date"] = end_date
-
-        where_clause = ""
-        if conditions:
-            where_clause = "WHERE " + " AND ".join(conditions)
-
-        result = self.session.execute(
-            text(
-                f"""
-                UPDATE fact_daily_prices
-                SET
-                    has_complete_data = (
-                        close_price IS NOT NULL
-                        AND change_1d_pct IS NOT NULL
-                        AND change_ytd_pct IS NOT NULL
+        stmt = (
+            _update(_FDP)
+            .values(
+                has_complete_data=(
+                    _FDP.close_price.isnot(None)
+                    & _FDP.change_1d_pct.isnot(None)
+                    & _FDP.change_ytd_pct.isnot(None)
+                ),
+                data_quality_flag=case(
+                    (_FDP.close_price.is_(None), "POOR"),
+                    (
+                        _FDP.close_price.isnot(None)
+                        & _FDP.change_1d_pct.isnot(None)
+                        & _FDP.change_ytd_pct.isnot(None),
+                        "GOOD",
                     ),
-                    data_quality_flag = CASE
-                        WHEN close_price IS NULL THEN 'POOR'
-                        WHEN close_price IS NOT NULL
-                             AND change_1d_pct IS NOT NULL
-                             AND change_ytd_pct IS NOT NULL THEN 'GOOD'
-                        ELSE 'INCOMPLETE'
-                    END,
-                    confidence_score = CASE
-                        WHEN close_price IS NULL THEN 20.00
-                        WHEN close_price IS NOT NULL
-                             AND change_1d_pct IS NOT NULL
-                             AND change_ytd_pct IS NOT NULL THEN 85.00
-                        ELSE 70.00
-                    END
-                {where_clause}
-                """
-            ),
-            params,
+                    else_="INCOMPLETE",
+                ),
+                confidence_score=case(
+                    (_FDP.close_price.is_(None), 20.00),
+                    (
+                        _FDP.close_price.isnot(None)
+                        & _FDP.change_1d_pct.isnot(None)
+                        & _FDP.change_ytd_pct.isnot(None),
+                        85.00,
+                    ),
+                    else_=70.00,
+                ),
+            )
         )
 
+        if start_date is not None:
+            stmt = stmt.where(_FDP.price_date >= start_date)
+        if end_date is not None:
+            stmt = stmt.where(_FDP.price_date <= end_date)
+
+        result = self.session.execute(stmt)
         return result.rowcount or 0
     
     def upsert_price(

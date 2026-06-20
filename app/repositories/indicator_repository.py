@@ -197,41 +197,24 @@ class IndicatorRepository(BaseRepository[FactTechnicalIndicator]):
         stock_id: int,
         calculation_date: date,
         indicators: Dict[str, Any]
-    ) -> FactTechnicalIndicator:
+    ) -> Optional[FactTechnicalIndicator]:
         """
-        Save calculated indicators for a stock (upsert).
-        
-        If indicators for stock_id + date exist, update them.
-        Otherwise, create new record.
-        
-        Args:
-            stock_id: Stock identifier
-            calculation_date: Date of calculation
-            indicators: Dict with indicator values
-                Keys: ma_7, ma_30, rsi_14, macd, volatility_30, etc.
-                
-        Returns:
-            Indicator record (created or updated)
+        Atomically upsert indicators for a stock on a given date.
+
+        Uses INSERT ... ON CONFLICT DO UPDATE to avoid the SELECT-then-INSERT
+        race condition that caused concurrent workers to lose indicator writes.
+        Returns the upserted row.
         """
-        existing = (
+        row = {"stock_id": stock_id, "calculation_date": calculation_date, **indicators}
+        self.bulk_save_indicators([row])
+        return (
             self.session.query(FactTechnicalIndicator)
             .filter(
-                and_(
-                    FactTechnicalIndicator.stock_id == stock_id,
-                    FactTechnicalIndicator.calculation_date == calculation_date
-                )
+                FactTechnicalIndicator.stock_id == stock_id,
+                FactTechnicalIndicator.calculation_date == calculation_date,
             )
             .first()
         )
-        
-        if existing:
-            return self.update(existing, **indicators)
-        else:
-            return self.create(
-                stock_id=stock_id,
-                calculation_date=calculation_date,
-                **indicators
-            )
     
     def bulk_save_indicators(
         self,

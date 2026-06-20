@@ -65,6 +65,8 @@ class StagingRepository(BaseRepository[StagingDailyPrice]):
             loaded_at = datetime.now()
             total_inserted = 0
             
+            t = StagingDailyPrice.__table__
+
             for _, row in df.iterrows():
                 record = {
                     "stock_code": str(row['stock_code']).upper().strip(),
@@ -85,7 +87,7 @@ class StagingRepository(BaseRepository[StagingDailyPrice]):
                 if pd.notna(row.get('volume')):
                     record["volume"] = int(row.get('volume'))
                 records.append(record)
-                
+
                 if len(records) >= batch_size:
                     stmt = insert(StagingDailyPrice).values(records)
                     stmt = stmt.on_conflict_do_update(
@@ -96,20 +98,31 @@ class StagingRepository(BaseRepository[StagingDailyPrice]):
                             "change_ytd_pct": stmt.excluded.change_ytd_pct,
                             "volume": stmt.excluded.volume,
                             "loaded_at": stmt.excluded.loaded_at,
-                            "reconciled": False,
-                            "promoted_at": None,
-                            "reconciliation_notes": None,
+                            # Preserve reconciliation state when row is already reconciled
+                            # so backfill reruns don't demote previously-reconciled rows.
+                            "reconciled": case(
+                                (t.c.reconciled == True, t.c.reconciled),
+                                else_=False,
+                            ),
+                            "promoted_at": case(
+                                (t.c.reconciled == True, t.c.promoted_at),
+                                else_=None,
+                            ),
+                            "reconciliation_notes": case(
+                                (t.c.reconciled == True, t.c.reconciliation_notes),
+                                else_=None,
+                            ),
                         }
                     )
                     result = self.session.execute(stmt)
-                    self.session.commit()
+                    # flush without commit — the caller (StagingManager) holds the
+                    # transaction boundary and will commit once all batches succeed.
+                    self.session.flush()
                     inserted = result.rowcount or 0
                     total_inserted += inserted
-                    logger.debug(
-                        f"Upserted batch of {inserted} staging records"
-                    )
+                    logger.debug(f"Flushed batch of {inserted} staging records")
                     records = []
-            
+
             if records:
                 stmt = insert(StagingDailyPrice).values(records)
                 stmt = stmt.on_conflict_do_update(
@@ -120,18 +133,25 @@ class StagingRepository(BaseRepository[StagingDailyPrice]):
                         "change_ytd_pct": stmt.excluded.change_ytd_pct,
                         "volume": stmt.excluded.volume,
                         "loaded_at": stmt.excluded.loaded_at,
-                        "reconciled": False,
-                        "promoted_at": None,
-                        "reconciliation_notes": None,
+                        "reconciled": case(
+                            (t.c.reconciled == True, t.c.reconciled),
+                            else_=False,
+                        ),
+                        "promoted_at": case(
+                            (t.c.reconciled == True, t.c.promoted_at),
+                            else_=None,
+                        ),
+                        "reconciliation_notes": case(
+                            (t.c.reconciled == True, t.c.reconciliation_notes),
+                            else_=None,
+                        ),
                     }
                 )
                 result = self.session.execute(stmt)
-                self.session.commit()
+                self.session.flush()
                 inserted = result.rowcount or 0
                 total_inserted += inserted
-                logger.debug(
-                    f"Upserted final batch of {inserted} staging records"
-                )
+                logger.debug(f"Flushed final batch of {inserted} staging records")
             
             logger.info(f"Bulk inserted {total_inserted} records from {source}")
             
@@ -451,53 +471,51 @@ class StagingRepository(BaseRepository[StagingDailyPrice]):
             Created or updated audit log record
         """
         try:
-            existing_logs = (
+            # Atomic upsert — relies on ux_audit_stock_date unique constraint.
+            # Previously used SELECT-then-DELETE-duplicates which was not atomic
+            # and allowed concurrent reconciliation workers to produce duplicate rows.
+            stmt = insert(StagingAuditLog).values(
+                stock_code=stock_code,
+                price_date=price_date,
+                sources=sources,
+                prices=prices,
+                resolution_method=resolution_method,
+                selected_price=selected_price,
+                selected_source=selected_source,
+                conflict_severity=conflict_severity,
+                notes=notes,
+            )
+            stmt = stmt.on_conflict_do_update(
+                constraint="ux_audit_stock_date",
+                set_={
+                    "sources": stmt.excluded.sources,
+                    "prices": stmt.excluded.prices,
+                    "resolution_method": stmt.excluded.resolution_method,
+                    "selected_price": stmt.excluded.selected_price,
+                    "selected_source": stmt.excluded.selected_source,
+                    "conflict_severity": stmt.excluded.conflict_severity,
+                    "notes": stmt.excluded.notes,
+                },
+            )
+            self.session.execute(stmt)
+            self.session.flush()
+            if commit:
+                self.session.commit()
+
+            logger.debug(
+                f"Upserted audit log for {stock_code} on {price_date}: "
+                f"{conflict_severity} severity, {resolution_method}"
+            )
+
+            return (
                 self.session.query(StagingAuditLog)
                 .filter(
                     StagingAuditLog.stock_code == stock_code,
                     StagingAuditLog.price_date == price_date,
                 )
-                .order_by(StagingAuditLog.audit_id.asc())
-                .all()
+                .one()
             )
-            audit_log = existing_logs[0] if existing_logs else None
 
-            for duplicate in existing_logs[1:]:
-                self.session.delete(duplicate)
-
-            if audit_log:
-                audit_log.sources = sources
-                audit_log.prices = prices
-                audit_log.resolution_method = resolution_method
-                audit_log.selected_price = selected_price
-                audit_log.selected_source = selected_source
-                audit_log.conflict_severity = conflict_severity
-                audit_log.notes = notes
-            else:
-                audit_log = StagingAuditLog(
-                    stock_code=stock_code,
-                    price_date=price_date,
-                    sources=sources,
-                    prices=prices,
-                    resolution_method=resolution_method,
-                    selected_price=selected_price,
-                    selected_source=selected_source,
-                    conflict_severity=conflict_severity,
-                    notes=notes
-                )
-                self.session.add(audit_log)
-
-            self.session.flush()
-            if commit:
-                self.session.commit()
-            
-            logger.debug(
-                f"Upserted audit log for {stock_code} on {price_date}: "
-                f"{conflict_severity} severity, {resolution_method}"
-            )
-            
-            return audit_log
-            
         except Exception as e:
             self.session.rollback()
             logger.error(f"Failed to create audit log: {e}")
