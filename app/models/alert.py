@@ -51,7 +51,7 @@ class AlertRule(Base, TimestampMixin):
     rule_id = Column(Integer, primary_key=True, autoincrement=True)
     rule_name = Column(String(100), unique=True, nullable=False)
     rule_type = Column(String(50), nullable=False)
-    condition_sql = Column(Text)
+    rule_config = Column(Text)  # Renamed from condition_sql — stores JSON rule params, NOT executable SQL
     threshold_value = Column(Numeric(10, 4))
     severity = Column(String(20), default='INFO')
     is_active = Column(Boolean, default=True, nullable=False)

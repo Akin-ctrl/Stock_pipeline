@@ -16,6 +16,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     CheckConstraint,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
@@ -47,6 +48,10 @@ class BacktestRun(Base, TimestampMixin):
 
     run_metadata = Column(JSONB, default={})
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("run_date", "profile", "run_type", name="ux_backtest_run_date_profile_type"),
+    )
 
     trades = relationship("BacktestTrade", back_populates="run", cascade="all, delete-orphan")
     snapshots = relationship("RecommendationSnapshot", back_populates="run", cascade="all, delete-orphan")

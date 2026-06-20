@@ -285,7 +285,7 @@ class FactRecommendationAudit(Base, TimestampMixin):
     __tablename__ = 'fact_recommendation_audit'
 
     audit_id = Column(BigInteger, primary_key=True, autoincrement=True)
-    stock_id = Column(Integer, ForeignKey('dim_stocks.stock_id'), nullable=False)
+    stock_id = Column(Integer, ForeignKey('dim_stocks.stock_id', ondelete='RESTRICT'), nullable=False)
     recommendation_date = Column(Date, nullable=False, index=True)
     profile = Column(String(50), nullable=False, default='steady_20p_10d', index=True)
 
@@ -391,7 +391,7 @@ class FactRecommendation(Base, TimestampMixin):
     __tablename__ = 'fact_recommendations'
     
     recommendation_id = Column(BigInteger, primary_key=True, autoincrement=True)
-    stock_id = Column(Integer, ForeignKey('dim_stocks.stock_id'), nullable=False)
+    stock_id = Column(Integer, ForeignKey('dim_stocks.stock_id', ondelete='RESTRICT'), nullable=False)
     recommendation_date = Column(Date, nullable=False, index=True)
     profile = Column(String(50), nullable=False, default='steady_20p_10d', index=True)
     
