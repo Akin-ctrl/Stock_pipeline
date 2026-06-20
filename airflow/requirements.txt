@@ -1,0 +1,11 @@
+# Packages NOT already shipped by the Airflow base image.
+# Airflow manages its own versions of pandas, numpy, sqlalchemy, psycopg2,
+# requests, jinja2, python-dotenv — do NOT re-pin those here.
+afrimarket==0.0.0.0
+xgboost-cpu==2.1.4
+mlflow==2.10.2
+scikit-learn==1.4.1.post1
+beautifulsoup4==4.12.3
+python-json-logger==2.0.7
+tabulate==0.9.0
+click==8.1.7
