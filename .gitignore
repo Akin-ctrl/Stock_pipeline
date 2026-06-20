@@ -65,3 +65,15 @@ pip-wheel-metadata/
 # ----------------------
 append_later.txt
 
+logs/
+*.log
+
+# ----------------------
+# MLflow run artifacts
+# ----------------------
+mlruns/
+
+# ----------------------
+# Virtual environment (explicit anchor for project root)
+# ----------------------
+/venv/
