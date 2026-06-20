@@ -2,7 +2,24 @@
 set -e
 
 echo "🔄 Waiting for PostgreSQL to be ready..."
-while ! pg_isready -h postgres -U stock_user -d stock_pipeline > /dev/null 2>&1; do
+until python3 - <<'PYCHECK'
+import os, sys
+try:
+    import psycopg2
+    conn = psycopg2.connect(
+        host=os.getenv("POSTGRES_HOST", "postgres"),
+        port=int(os.getenv("POSTGRES_PORT", "5432")),
+        dbname="postgres",
+        user=os.getenv("POSTGRES_USER"),
+        password=os.getenv("POSTGRES_PASSWORD"),
+        connect_timeout=3,
+    )
+    conn.close()
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+PYCHECK
+do
   sleep 1
 done
 echo "✅ PostgreSQL is ready!"
@@ -79,6 +96,62 @@ def init_database():
         logger.info("📊 Creating database tables...")
         Base.metadata.create_all(db.engine)
         logger.info("✅ Tables created successfully")
+
+        # Apply SQL migrations in filename order (date-prefixed names sort correctly).
+        # Migrations use BEGIN/COMMIT internally; we connect with autocommit so
+        # psycopg2 does not wrap each file in an extra implicit transaction.
+        # _migration_history tracks which files have been applied so re-starts
+        # never re-run destructive DDL (DROP TABLE / DROP VIEW) a second time.
+        import glob
+        migration_dir = "/app/db/migrations"
+        migration_files = sorted(glob.glob(f"{migration_dir}/*.sql"))
+        if migration_files:
+            logger.info(f"📦 Found {len(migration_files)} SQL migration(s)")
+            raw_conn = db.engine.raw_connection()
+            try:
+                raw_conn.autocommit = True
+                cursor = raw_conn.cursor()
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS _migration_history (
+                        migration_name TEXT PRIMARY KEY,
+                        applied_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """)
+
+                applied_count = 0
+                skipped_count = 0
+                for mf in migration_files:
+                    migration_name = os.path.basename(mf)
+                    cursor.execute(
+                        "SELECT 1 FROM _migration_history WHERE migration_name = %s",
+                        (migration_name,)
+                    )
+                    if cursor.fetchone():
+                        logger.info(f"  ⏭  {migration_name} (already applied)")
+                        skipped_count += 1
+                        continue
+
+                    logger.info(f"  → {migration_name}")
+                    with open(mf, 'r') as f:
+                        sql = f.read()
+                    cursor.execute(sql)
+                    cursor.execute(
+                        "INSERT INTO _migration_history (migration_name) VALUES (%s) ON CONFLICT DO NOTHING",
+                        (migration_name,)
+                    )
+                    applied_count += 1
+
+                cursor.close()
+                logger.info(f"✅ Migrations complete: {applied_count} applied, {skipped_count} skipped")
+            except Exception as exc:
+                logger.error(f"❌ Migration failed: {exc}")
+                raw_conn.close()
+                raise RuntimeError(f"Migration failed: {exc}") from exc
+            finally:
+                raw_conn.close()
+        else:
+            logger.info("ℹ️  No SQL migrations found in " + migration_dir)
         
         # Seed sectors (if not exists)
         with db.get_session() as session:
@@ -170,6 +243,9 @@ def init_database():
                 logger.info(f"ℹ️  Alert rules already exist ({rule_count} records)")
         
         logger.info("🎉 Database initialization complete!")
+        # Write sentinel so the Docker healthcheck can detect completion.
+        with open("/tmp/init-complete", "w") as _f:
+            _f.write("ok")
         return True
         
     except Exception as e:

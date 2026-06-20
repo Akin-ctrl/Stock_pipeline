@@ -40,10 +40,8 @@ for candidate in (
     if candidate and candidate not in sys.path:
         sys.path.insert(0, candidate)
 
-from scripts.backfill_historical_afrimarket import HistoricalBackfill
-from app.utils.logger import get_logger
-
-logger = get_logger(__name__)
+import logging
+logger = logging.getLogger("airflow.task")
 LOCAL_TZ = pendulum.timezone("Africa/Lagos")
 
 
@@ -60,7 +58,7 @@ def _parse_backfill_date(value: str) -> date:
 DEFAULT_ARGS = {
     "owner": "Emmanuel Akingbade",
     "depends_on_past": False,
-    "email": ["ramonaltton@gmail.com"],
+    "email": [os.getenv("AIRFLOW_ALERT_EMAIL", "")],
     "email_on_failure": False,
     "email_on_retry": False,
     "retries": 3,
@@ -156,6 +154,7 @@ def backfill_historical_data_dag():
             Dict with backfill results (success, record count, etc.)
         """
         try:
+            from app.services.data_operations.backfill_historical_afrimarket import HistoricalBackfill
             logger.info("Starting historical backfill execution")
             
             # Parse dates
@@ -200,9 +199,52 @@ def backfill_historical_data_dag():
             return result
             
         except Exception as e:
-            logger.error(f"Backfill execution failed: {str(e)}", error=e)
+            logger.error(f"Backfill execution failed: {str(e)}", exc_info=True)
             raise AirflowException(f"Backfill failed: {str(e)}")
     
+    @task(task_id="reconcile_staged_data")
+    def reconcile_staged_data(backfill_result: dict, **context) -> dict:
+        """
+        Reconcile all unreconciled staging rows loaded by the backfill.
+
+        Without this task the backfilled rows remain reconciled=False in
+        staging_daily_prices indefinitely, and the first live pipeline run
+        must reconcile potentially years of data before it can process the
+        current day — blocking for hours.
+        """
+        try:
+            from app.config.database import get_db
+            from app.pipelines.staging_manager import StagingManager
+
+            logger.info("Reconciling backfilled staging rows...")
+            db = get_db()
+            errors: list = []
+            warnings: list = []
+            timings: list = []
+
+            with db.get_session() as session:
+                manager = StagingManager(session, errors=errors, warnings=warnings, timings=timings)
+                reconciled_count, conflicts_flagged = manager.reconcile_all_staging()
+
+            logger.info(
+                f"Reconciliation complete: {reconciled_count} rows reconciled, "
+                f"{conflicts_flagged} conflicts flagged"
+            )
+            if warnings:
+                for w in warnings:
+                    logger.warning(w)
+
+            reconcile_summary = {
+                "reconciled_count": reconciled_count,
+                "conflicts_flagged": conflicts_flagged,
+            }
+            context["task_instance"].xcom_push(key="reconcile_summary", value=reconcile_summary)
+            return {**backfill_result, **reconcile_summary}
+
+        except Exception as e:
+            logger.error(f"Reconciliation failed: {str(e)}", exc_info=True)
+            raise AirflowException(f"Reconciliation failed: {str(e)}")
+
     @task(task_id="verify_staging_data")
     def verify_staging_data(backfill_result: dict) -> dict:
         """
@@ -274,27 +316,42 @@ def backfill_historical_data_dag():
                 if stats['unique_stocks'] < 5:
                     logger.warning(f"Only {stats['unique_stocks']} stocks staged (expected many more)")
                 
+                failed_stocks = backfill_result.get('failed_stocks', 0)
+                if failed_stocks > 0:
+                    raise AirflowException(
+                        f"Backfill completed with {failed_stocks} failed stock(s). "
+                        f"Partial backfills corrupt indicator history and ML training data. "
+                        f"Fix the failing stocks and rerun. "
+                        f"Backfill result: {backfill_result}"
+                    )
+
                 success = (
                     backfill_result.get('success', False) and
                     stats['total_records'] > 0 and
                     stats['unique_stocks'] > 0 and
                     stats['invalid_prices'] == 0
                 )
-                
-                status = "SUCCESS" if success else "WARNING"
-                
+
+                if not success:
+                    raise AirflowException(
+                        f"Backfill verification failed — success={backfill_result.get('success')}, "
+                        f"total_records={stats['total_records']}, "
+                        f"unique_stocks={stats['unique_stocks']}, "
+                        f"invalid_prices={stats['invalid_prices']}"
+                    )
+
                 verification = {
-                    "status": status,
+                    "status": "SUCCESS",
                     "backfill_result": backfill_result,
                     "staging_stats": stats,
                     "next_step": "Run main pipeline (nigerian_stock_pipeline_v2) to reconcile, transform, and load to production"
                 }
-                
+
                 logger.info(f"Staging verification: {verification}")
                 return verification
                 
         except Exception as e:
-            logger.error(f"Staging verification failed: {str(e)}", error=e)
+            logger.error(f"Staging verification failed: {str(e)}", exc_info=True)
             raise AirflowException(f"Verification failed: {str(e)}")
     
     @task(task_id="print_summary")
@@ -335,10 +392,11 @@ def backfill_historical_data_dag():
     # Task dependencies
     config = parse_backfill_config()
     result = run_backfill(config)
-    verification = verify_staging_data(result)
+    reconciled = reconcile_staged_data(result)
+    verification = verify_staging_data(reconciled)
     summary = print_summary(verification)
-    
-    config >> result >> verification >> summary
+
+    config >> result >> reconciled >> verification >> summary
 
 
 # Instantiate DAG

@@ -187,6 +187,9 @@ class Settings:
     paths: PathConfig
     environment: str = "development"
     debug: bool = False
+    lookback_days: int = 30
+    batch_size: int = 50
+    active_recommendation_profiles: List[str] = field(default_factory=lambda: ['steady_20p_10d', 'steady_20p_20d'])
     
     @classmethod
     def load(cls, env: Optional[str] = None) -> "Settings":
@@ -211,10 +214,10 @@ class Settings:
         db_user = os.getenv("POSTGRES_USER")
         db_password = os.getenv("POSTGRES_PASSWORD")
         
-        if not all([db_host, db_name, db_user, db_password]):
+        if not all([db_host, db_port, db_name, db_user, db_password]):
             raise MissingConfigError(
                 "Missing required database configuration. "
-                "Set POSTGRES_HOST, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD"
+                "Set POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD"
             )
         
         database = DatabaseConfig(
@@ -269,6 +272,19 @@ class Settings:
         # Debug mode
         debug = os.getenv("DEBUG", "false").lower() == "true"
         
+        # Pipeline defaults
+        lookback_days = int(os.getenv("PIPELINE_LOOKBACK_DAYS", "30"))
+        batch_size = int(os.getenv("PIPELINE_BATCH_SIZE", "50"))
+        active_recommendation_profiles_str = os.getenv(
+            "ACTIVE_RECOMMENDATION_PROFILES",
+            "steady_20p_10d,steady_20p_20d"
+        )
+        active_recommendation_profiles = [
+            p.strip()
+            for p in active_recommendation_profiles_str.split(",")
+            if p.strip()
+        ]
+        
         return cls(
             database=database,
             data_sources=data_sources,
@@ -276,7 +292,10 @@ class Settings:
             notifications=notifications,
             paths=paths,
             environment=environment,
-            debug=debug
+            debug=debug,
+            lookback_days=lookback_days,
+            batch_size=batch_size,
+            active_recommendation_profiles=active_recommendation_profiles
         )
     
     def __repr__(self) -> str:
