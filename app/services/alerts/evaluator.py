@@ -608,10 +608,10 @@ class AlertEvaluator:
                 elif 'OVERSOLD' in rule.rule_name.upper():
                     params['oversold'] = threshold_val
 
-        condition_sql = getattr(rule, 'condition_sql', None)
-        if isinstance(condition_sql, str) and condition_sql.strip().startswith('{'):
+        rule_config = getattr(rule, 'rule_config', None) or getattr(rule, 'condition_sql', None)
+        if isinstance(rule_config, str) and rule_config.strip().startswith('{'):
             try:
-                parsed = json.loads(condition_sql)
+                parsed = json.loads(rule_config)
                 if isinstance(parsed, dict):
                     params.update(parsed)
             except Exception:

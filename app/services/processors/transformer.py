@@ -51,8 +51,10 @@ class DataTransformer:
         df = self._clean_company_names(df)
         df = self._standardize_dates(df)
         
-        # Add metadata
-        df['source'] = source
+        # Preserve per-row source when already set; only stamp the caller-supplied
+        # source on rows that arrived without one (e.g. the direct/legacy workflow).
+        if 'source' not in df.columns:
+            df['source'] = source
         df['has_complete_data'] = self._check_completeness(df)
         df['ingestion_timestamp'] = datetime.now()
         
@@ -90,11 +92,7 @@ class DataTransformer:
     def _standardize_dates(self, df: pd.DataFrame) -> pd.DataFrame:
         """Ensure price_date is proper date object."""
         if 'price_date' in df.columns:
-            # Convert to date if it's datetime
-            if pd.api.types.is_datetime64_any_dtype(df['price_date']):
-                df['price_date'] = pd.to_datetime(df['price_date']).dt.date
-            elif not pd.api.types.is_object_dtype(df['price_date']):
-                df['price_date'] = pd.to_datetime(df['price_date']).dt.date
+            df['price_date'] = pd.to_datetime(df['price_date']).dt.date
         return df
     
     def _check_completeness(self, df: pd.DataFrame) -> pd.Series:
@@ -122,8 +120,7 @@ class DataTransformer:
     def _fill_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
         """Fill missing values with appropriate defaults."""
         # Fill numeric NaN with None (for SQL NULL)
-        numeric_cols = ['open_price', 'high_price', 'low_price', 'volume', 
-                       'change_1d_pct', 'change_ytd_pct']
+        numeric_cols = ['volume', 'change_1d_pct', 'change_ytd_pct']
         
         for col in numeric_cols:
             if col in df.columns:

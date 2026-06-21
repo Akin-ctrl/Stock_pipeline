@@ -16,9 +16,9 @@ from datetime import datetime, date
 from typing import Optional
 from decimal import Decimal
 from sqlalchemy import (
-    Column, BigInteger, Integer, String, Date, 
+    Column, BigInteger, Integer, String, Date,
     Boolean, Text, TIMESTAMP, Numeric, ARRAY,
-    CheckConstraint, Index
+    CheckConstraint, Index, UniqueConstraint,
 )
 from sqlalchemy.sql import func
 
@@ -204,10 +204,15 @@ class StagingAuditLog(Base):
     
     # Constraints
     __table_args__ = (
+        # Enforce one audit row per stock per date — prevents concurrent
+        # reconciliation workers from writing duplicate entries and having the
+        # wrong canonical price win based on non-deterministic timestamp order.
+        UniqueConstraint('stock_code', 'price_date', name='ux_audit_stock_date'),
+
         # Performance indexes
         Index('idx_audit_date_severity', 'price_date', 'conflict_severity'),
         Index('idx_audit_stock_date', 'stock_code', 'price_date'),
-        
+
         # Data validation
         CheckConstraint(
             "resolution_method IN ('average', 'prefer_source', 'manual', 'single_source')",

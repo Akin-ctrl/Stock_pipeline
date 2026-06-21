@@ -1,20 +1,9 @@
-FROM apache/airflow:2.10.4-python3.11
-
-USER root
-
-# Install system dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    gcc \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-USER airflow
-
-# Copy and install Python dependencies
-COPY app/requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+FROM apache/airflow:2.10.4-python3.12
 
 # Set PYTHONPATH to include Stock_pipeline directory
 ENV PYTHONPATH=/Stock_pipeline
+
+# Copy and install Python dependencies
+COPY airflow/requirements.txt /tmp/airflow-requirements.txt
+RUN pip install --no-cache-dir --retries 10 --timeout 1000 -r /tmp/airflow-requirements.txt
 

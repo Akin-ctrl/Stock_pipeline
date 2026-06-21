@@ -59,7 +59,7 @@ class DataValidator:
     MIN_PRICE = 0.01
     MAX_PRICE = 1_000_000.0
     MAX_DAILY_CHANGE_PCT = 50.0  # Flag >50% daily change as suspicious
-    VALID_EXCHANGES = {'NGX', 'LSE'}
+    VALID_EXCHANGES = {'NGX'}
     
     def __init__(self, valid_sectors: List[str]):
         """
@@ -174,28 +174,7 @@ class DataValidator:
             })
             df.loc[idx, 'data_quality_flag'] = 'SUSPICIOUS'
         
-        # Check OHLC consistency if available
-        if all(col in df.columns for col in ['open_price', 'high_price', 'low_price']):
-            ohlc_invalid = (
-                (df['high_price'] < df['low_price']) |
-                (df['high_price'] < df['close_price']) |
-                (df['low_price'] > df['close_price'])
-            )
-            
-            ohlc_invalid_indices = df[ohlc_invalid].index.tolist()
-            for idx in ohlc_invalid_indices:
-                warnings.append({
-                    'index': idx,
-                    'field': 'ohlc',
-                    'warning': 'OHLC consistency violated',
-                    'value': {
-                        'open': df.loc[idx, 'open_price'],
-                        'high': df.loc[idx, 'high_price'],
-                        'low': df.loc[idx, 'low_price'],
-                        'close': df.loc[idx, 'close_price']
-                    }
-                })
-                df.loc[idx, 'data_quality_flag'] = 'SUSPICIOUS'
+
         
         return df
     

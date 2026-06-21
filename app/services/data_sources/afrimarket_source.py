@@ -97,19 +97,43 @@ class AfrimarketDataSource(DataSource):
         )
 
     def _extract_next_page_url(self, html: str) -> Optional[str]:
-        """Return the next-page URL if the market page is paginated."""
-        match = re.search(r'rel=next href="([^"]+)"', html)
-        if not match:
-            return None
-        return match.group(1)
+        """Return the next-page URL if the market page is paginated.
+
+        Handles both attribute orderings that appear in real HTML:
+            <a rel="next" href="..."> and <a href="..." rel="next">
+        """
+        # rel before href
+        match = re.search(
+            r'rel=["\']next["\'][^>]*href=["\']([^"\']+)["\']', html
+        )
+        if match:
+            return match.group(1)
+        # href before rel
+        match = re.search(
+            r'href=["\']([^"\']+)["\'][^>]*rel=["\']next["\']', html
+        )
+        if match:
+            return match.group(1)
+        return None
+
+    _MAX_PAGINATION_PAGES = 20
 
     def _get_listed_companies(self) -> pd.DataFrame:
         """Fetch and combine all listed companies pages from Afrimarket."""
         frames: list[pd.DataFrame] = []
         seen_urls: set[str] = set()
         next_url: Optional[str] = self.market_url
+        page_count = 0
 
         while next_url and next_url not in seen_urls:
+            page_count += 1
+            if page_count > self._MAX_PAGINATION_PAGES:
+                self.logger.warning(
+                    f"Pagination limit of {self._MAX_PAGINATION_PAGES} pages reached; "
+                    "stopping to avoid an infinite loop"
+                )
+                break
+
             html, resolved_url = self._fetch_market_page(next_url)
             seen_urls.add(resolved_url)
 
@@ -208,7 +232,14 @@ class AfrimarketDataSource(DataSource):
             df = df[keep_cols]
             
             # Filter out invalid records
+            before_drop = len(df)
             df = df.dropna(subset=['stock_code', 'close_price'])
+            dropped = before_drop - len(df)
+            if dropped:
+                self.logger.warning(
+                    f"Dropped {dropped} row(s) with null stock_code or close_price "
+                    f"({before_drop} → {len(df)})"
+                )
             
             # Clean up stock codes
             df['stock_code'] = df['stock_code'].str.upper().str.strip()
@@ -276,7 +307,8 @@ class AfrimarketDataSource(DataSource):
             )
             
             all_records = []
-            
+            failed_stocks: list[str] = []
+
             for i, stock_code in enumerate(stock_codes, 1):
                 try:
                     self.logger.debug(f"Fetching {stock_code} ({i}/{len(stock_codes)})")
@@ -322,9 +354,23 @@ class AfrimarketDataSource(DataSource):
                         time.sleep(0.1)
                     
                 except Exception as e:
+                    failed_stocks.append(stock_code)
                     self.logger.error(f"Failed to fetch {stock_code}: {str(e)}")
                     continue
-            
+
+            if failed_stocks:
+                fail_rate = len(failed_stocks) / len(stock_codes)
+                self.logger.warning(
+                    f"Failed to fetch {len(failed_stocks)}/{len(stock_codes)} stocks "
+                    f"({fail_rate*100:.0f}%): {failed_stocks}"
+                )
+                if fail_rate >= 0.5:
+                    raise DataFetchError(
+                        f"Historical fetch failure rate {fail_rate*100:.0f}% exceeds 50% — "
+                        f"aborting to prevent partial backfill. "
+                        f"Failed stocks: {failed_stocks}"
+                    )
+
             if not all_records:
                 raise DataFetchError("No historical data fetched for any stock")
             

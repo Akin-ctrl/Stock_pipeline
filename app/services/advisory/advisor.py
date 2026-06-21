@@ -8,7 +8,7 @@ technical signals, stock scores, and risk analysis.
 Not financial advice. Always do your own research.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import List, Optional, Dict
 from decimal import Decimal
@@ -31,6 +31,7 @@ from app.services.modeling.feature_engineering import build_historical_feature_s
 from app.services.modeling import (
     HistoricalLogisticProbabilityEstimator,
     NullProbabilityEstimator,
+    MLflowProbabilityEstimator,
 )
 from app.repositories import IndicatorRepository, PriceRepository, StockRepository
 from app.utils import get_logger
@@ -39,6 +40,8 @@ from app.utils import get_logger
 class RecommendationProfile(Enum):
     """Strategy profile for recommendation tuning."""
     STEADY_20P_10D = "steady_20p_10d"
+    STEADY_20P_10D_V2 = "steady_20p_10d_v2"
+    STEADY_20P_20D = "steady_20p_20d"
 
 
 class RecommendationAction(Enum):
@@ -91,41 +94,55 @@ class RecommendationProfileConfig:
     eligibility_config: EligibilityConfig
     selection_config: SelectionConfig
     policy_config: PolicyConfig
+    prediction_horizon: int = 10
+
+
+# Shared profile building blocks — reused across profiles that target the same
+# NGX market segment. Extracting here makes divergences explicit: any
+# per-profile override appears inline; anything absent is inherited from these
+# shared constants. Changes here propagate uniformly to all consumers.
+_STANDARD_SIGNAL_CONFIG = SignalConfig(
+    rsi_oversold=35.0,
+    rsi_overbought=72.0,
+    rsi_strong_oversold=25.0,
+    rsi_strong_overbought=80.0,
+)
+
+_STANDARD_SCORING_CONFIG = ScoringConfig(
+    technical_weight=0.25,
+    momentum_weight=0.32,
+    volatility_weight=0.23,
+    trend_weight=0.15,
+    volume_weight=0.05,
+)
+
+_STANDARD_ELIGIBILITY_CONFIG = EligibilityConfig(
+    min_price=8.0,
+    max_volatility=0.75,
+    min_volume_ratio=0.8,
+    rsi_min=40.0,
+    rsi_max=75.0,
+    min_trusted_history_days=30,
+    min_price_confidence_score=60.0,
+    require_complete_data=True,
+    require_official=False,
+    min_drawdown_20d_pct=1.0,
+    max_price_change_20d_pct=12.0,
+)
+
+_STANDARD_SELECTION_CONFIG = SelectionConfig(
+    min_heuristic_score=70.0,
+    min_signal_agreement=0.60,
+    buy_only=True,
+)
 
 
 PROFILE_CONFIGS: Dict[RecommendationProfile, RecommendationProfileConfig] = {
     RecommendationProfile.STEADY_20P_10D: RecommendationProfileConfig(
-        signal_config=SignalConfig(
-            rsi_oversold=35.0,
-            rsi_overbought=72.0,
-            rsi_strong_oversold=25.0,
-            rsi_strong_overbought=80.0,
-        ),
-        scoring_config=ScoringConfig(
-            technical_weight=0.25,
-            momentum_weight=0.32,
-            volatility_weight=0.23,
-            trend_weight=0.15,
-            volume_weight=0.05,
-        ),
-        eligibility_config=EligibilityConfig(
-            min_price=8.0,
-            max_volatility=0.75,
-            min_volume_ratio=0.8,
-            rsi_min=40.0,
-            rsi_max=75.0,
-            min_trusted_history_days=30,
-            min_price_confidence_score=60.0,
-            require_complete_data=True,
-            require_official=False,
-            min_drawdown_20d_pct=1.0,
-            max_price_change_20d_pct=12.0,
-        ),
-        selection_config=SelectionConfig(
-            min_heuristic_score=70.0,
-            min_signal_agreement=0.60,
-            buy_only=True,
-        ),
+        signal_config=_STANDARD_SIGNAL_CONFIG,
+        scoring_config=_STANDARD_SCORING_CONFIG,
+        eligibility_config=_STANDARD_ELIGIBILITY_CONFIG,
+        selection_config=_STANDARD_SELECTION_CONFIG,
         policy_config=PolicyConfig(
             target_upside_buy=1.20,
             target_upside_strong=1.25,
@@ -133,7 +150,93 @@ PROFILE_CONFIGS: Dict[RecommendationProfile, RecommendationProfileConfig] = {
             stop_loss_strong=0.92,
         ),
     ),
+    RecommendationProfile.STEADY_20P_10D_V2: RecommendationProfileConfig(
+        signal_config=SignalConfig(
+            rsi_oversold=35.0,
+            rsi_overbought=74.0,
+            rsi_strong_oversold=25.0,
+            rsi_strong_overbought=84.0,
+        ),
+        scoring_config=ScoringConfig(
+            technical_weight=0.24,
+            momentum_weight=0.34,
+            volatility_weight=0.18,
+            trend_weight=0.16,
+            volume_weight=0.08,
+        ),
+        # Intentionally wide / no-op filters: V2 screens in the full universe
+        # and relies on _apply_profile_score_adjustments() to penalise low
+        # price, high volatility, and thin volume after base scoring.
+        # Pre-eligibility hard cuts are deliberately absent here.
+        eligibility_config=EligibilityConfig(
+            min_price=0.20,
+            max_volatility=2.00,
+            min_volume_ratio=0.0,
+            rsi_min=0.0,
+            rsi_max=100.0,
+            min_trusted_history_days=30,
+            min_price_confidence_score=60.0,
+            require_complete_data=True,
+            require_official=False,
+            min_drawdown_20d_pct=None,
+            max_price_change_20d_pct=None,
+        ),
+        selection_config=SelectionConfig(
+            min_heuristic_score=68.0,
+            min_signal_agreement=0.40,
+            buy_only=True,
+        ),
+        policy_config=PolicyConfig(
+            target_upside_buy=1.16,
+            target_upside_strong=1.20,
+            stop_loss_buy=0.93,
+            stop_loss_strong=0.91,
+        ),
+    ),
+    RecommendationProfile.STEADY_20P_20D: RecommendationProfileConfig(
+        signal_config=_STANDARD_SIGNAL_CONFIG,
+        scoring_config=_STANDARD_SCORING_CONFIG,
+        eligibility_config=_STANDARD_ELIGIBILITY_CONFIG,
+        selection_config=_STANDARD_SELECTION_CONFIG,
+        policy_config=PolicyConfig(
+            target_upside_buy=1.25,
+            target_upside_strong=1.30,
+            stop_loss_buy=0.90,
+            stop_loss_strong=0.88,
+        ),
+        prediction_horizon=20,
+    ),
 }
+
+
+@dataclass
+class RecommendationAuditEntry:
+    """Terminal candidate-funnel state for one stock in one recommendation run."""
+
+    stock_id: int
+    stock_code: str
+    recommendation_date: date
+    profile: str
+    stage_reached: str
+    rejection_reason: Optional[str] = None
+    price_date: Optional[date] = None
+    indicator_date: Optional[date] = None
+    current_price: Optional[float] = None
+    action_type: Optional[str] = None
+    technical_signal_type: Optional[str] = None
+    signal_agreement: Optional[float] = None
+    predicted_probability_10d_up: Optional[float] = None
+    heuristic_score: Optional[float] = None
+    heuristic_score_category: Optional[str] = None
+    eligible: bool = False
+    selected: bool = False
+    portfolio_approved: bool = False
+    portfolio_rejection_reason: Optional[str] = None
+    portfolio_rank: Optional[int] = None
+    candidate_tier: str = "blocked"
+    indicators: Dict[str, object] = field(default_factory=dict)
+    score_breakdown: Dict[str, object] = field(default_factory=dict)
+    model_version: Optional[str] = None
 
 
 @dataclass
@@ -265,7 +368,7 @@ class StockScreener:
         self.probability_estimator = (
             probability_estimator
             if probability_estimator is not None
-            else HistoricalLogisticProbabilityEstimator(db_session)
+            else MLflowProbabilityEstimator(horizon_days=self.profile_config.prediction_horizon)
         )
         self.policy_engine = RecommendationPolicyEngine(self.profile_config.policy_config)
         self.eligibility_evaluator = RecommendationEligibilityEvaluator(
@@ -274,6 +377,7 @@ class StockScreener:
         self.selection_evaluator = RecommendationSelectionEvaluator(
             self.profile_config.selection_config
         )
+        self.last_audit_entries: List[RecommendationAuditEntry] = []
         
         self.stock_repo = StockRepository(db_session)
         self.price_repo = PriceRepository(db_session)
@@ -328,6 +432,7 @@ class StockScreener:
         min_signal_agreement: Optional[float] = None,
         min_predicted_probability: Optional[float] = None,
         strategy_profile: Optional[str] = None,
+        capture_audit: bool = False,
     ) -> List[StockRecommendation]:
         """
         Generate recommendations for stocks.
@@ -349,6 +454,8 @@ class StockScreener:
 
         if strategy_profile is not None:
             self._apply_profile(self._parse_profile(strategy_profile))
+
+        self.last_audit_entries = []
 
         effective_min_score = (
             self.profile_config.selection_config.min_heuristic_score
@@ -389,7 +496,8 @@ class StockScreener:
             stocks = self.stock_repo.get_all_active()
         
         recommendations = []
-        
+        analysis_errors = 0
+
         for stock in stocks:
             try:
                 recommendation = self._analyze_stock(
@@ -398,16 +506,26 @@ class StockScreener:
                     effective_min_score,
                     effective_min_signal_agreement,
                     effective_min_predicted_probability,
+                    self.last_audit_entries if capture_audit else None,
                 )
-                
+
                 if recommendation:
                     recommendations.append(recommendation)
-                    
+
             except Exception as e:
+                analysis_errors += 1
                 self.logger.warning(
                     f"Failed to analyze {stock.stock_code}: {str(e)}"
                 )
-        
+
+        if stocks and analysis_errors > 0:
+            error_rate = analysis_errors / len(stocks)
+            log_fn = self.logger.error if error_rate > 0.3 else self.logger.warning
+            log_fn(
+                f"Recommendation analysis failed for {analysis_errors}/{len(stocks)} stocks "
+                f"({error_rate*100:.0f}%)"
+            )
+
         # Keep model probability diagnostic until ranking is proven out-of-sample.
         recommendations.sort(key=self._recommendation_rank_key, reverse=True)
         
@@ -428,6 +546,7 @@ class StockScreener:
         min_score: float,
         min_signal_agreement: float,
         min_predicted_probability: Optional[float],
+        audit_entries: Optional[List[RecommendationAuditEntry]] = None,
     ) -> Optional[StockRecommendation]:
         """Analyze individual stock and generate recommendation."""
         
@@ -441,6 +560,13 @@ class StockScreener:
             self.logger.debug(
                 f"No indicators found for {stock.stock_code}"
             )
+            self._append_audit_entry(
+                audit_entries,
+                stock=stock,
+                recommendation_date=recommendation_date,
+                stage_reached="no_indicator",
+                rejection_reason="no_indicator",
+            )
             return None
         
         # Get current price
@@ -453,15 +579,44 @@ class StockScreener:
             self.logger.debug(
                 f"No price data for {stock.stock_code}"
             )
+            self._append_audit_entry(
+                audit_entries,
+                stock=stock,
+                recommendation_date=recommendation_date,
+                stage_reached="no_trusted_price",
+                rejection_reason="no_trusted_price",
+                indicator_date=getattr(indicators_data, 'calculation_date', None),
+            )
             return None
         
         if hasattr(indicators_data, 'calculation_date') and indicators_data.calculation_date != latest_price.price_date:
+            from datetime import timedelta
+            # Accept indicators that lag the latest price by at most one trading day.
+            # A one-day lag is normal when indicators are computed before today's price
+            # is promoted; rejecting all such stocks would silence all recommendations
+            # on any day with a slight pipeline lag.
+            indicator_lag = (latest_price.price_date - indicators_data.calculation_date).days
+            if indicator_lag > 1:
+                self.logger.debug(
+                    f"Skipping {stock.stock_code}: indicator date "
+                    f"{indicators_data.calculation_date} is {indicator_lag} days behind "
+                    f"trusted price date {latest_price.price_date} (max lag allowed: 1)"
+                )
+                self._append_audit_entry(
+                    audit_entries,
+                    stock=stock,
+                    recommendation_date=recommendation_date,
+                    stage_reached="indicator_price_date_mismatch",
+                    rejection_reason="indicator_price_date_mismatch",
+                    price_date=latest_price.price_date,
+                    indicator_date=getattr(indicators_data, 'calculation_date', None),
+                    current_price=float(latest_price.close_price),
+                )
+                return None
             self.logger.debug(
-                f"Skipping {stock.stock_code}: latest indicator date "
-                f"{indicators_data.calculation_date} does not match trusted price date "
-                f"{latest_price.price_date}"
+                f"{stock.stock_code}: using indicators from {indicators_data.calculation_date} "
+                f"for price date {latest_price.price_date} (1-day lag within tolerance)"
             )
-            return None
 
         # Build indicators dict
         indicators, trusted_price_history = self._build_indicators_dict(
@@ -480,6 +635,7 @@ class StockScreener:
             indicators,
             price_history=trusted_price_history,
         )
+        self._apply_profile_score_adjustments(score, indicators)
 
         predicted_probability_10d_up = self.probability_estimator.estimate_probability_10d_up(
             {
@@ -500,6 +656,27 @@ class StockScreener:
                 f"{stock.stock_code} failed eligibility: "
                 f"{eligibility_decision.rejection_reason}"
             )
+            self._append_audit_entry(
+                audit_entries,
+                stock=stock,
+                recommendation_date=recommendation_date,
+                stage_reached="eligibility_failed",
+                rejection_reason=eligibility_decision.rejection_reason,
+                price_date=latest_price.price_date,
+                indicator_date=getattr(indicators_data, 'calculation_date', None),
+                current_price=float(latest_price.close_price),
+                action_type=action_type.value,
+                technical_signal_type=signal.signal_type.value,
+                signal_agreement=signal.signal_agreement,
+                predicted_probability_10d_up=predicted_probability_10d_up,
+                heuristic_score=score.total_score,
+                heuristic_score_category=score.category.value,
+                eligible=False,
+                selected=False,
+                indicators=indicators,
+                score_breakdown=score.breakdown,
+                model_version=self._audit_model_version(predicted_probability_10d_up),
+            )
             return None
 
         selection_decision = self.selection_evaluator.evaluate(
@@ -516,6 +693,27 @@ class StockScreener:
                 f"{stock.stock_code} failed selection: "
                 f"{selection_decision.rejection_reason}"
             )
+            self._append_audit_entry(
+                audit_entries,
+                stock=stock,
+                recommendation_date=recommendation_date,
+                stage_reached="selection_failed",
+                rejection_reason=selection_decision.rejection_reason,
+                price_date=latest_price.price_date,
+                indicator_date=getattr(indicators_data, 'calculation_date', None),
+                current_price=float(latest_price.close_price),
+                action_type=action_type.value,
+                technical_signal_type=signal.signal_type.value,
+                signal_agreement=signal.signal_agreement,
+                predicted_probability_10d_up=predicted_probability_10d_up,
+                heuristic_score=score.total_score,
+                heuristic_score_category=score.category.value,
+                eligible=True,
+                selected=False,
+                indicators=indicators,
+                score_breakdown=score.breakdown,
+                model_version=self._audit_model_version(predicted_probability_10d_up),
+            )
             return None
 
         policy_output = self.policy_engine.build_policy_output(
@@ -528,6 +726,28 @@ class StockScreener:
         
         # Build combined reasons
         reasons = self._build_reasons(signal, score, indicators)
+
+        self._append_audit_entry(
+            audit_entries,
+            stock=stock,
+            recommendation_date=recommendation_date,
+            stage_reached="selected",
+            rejection_reason=None,
+            price_date=latest_price.price_date,
+            indicator_date=getattr(indicators_data, 'calculation_date', None),
+            current_price=float(latest_price.close_price),
+            action_type=action_type.value,
+            technical_signal_type=signal.signal_type.value,
+            signal_agreement=signal.signal_agreement,
+            predicted_probability_10d_up=predicted_probability_10d_up,
+            heuristic_score=score.total_score,
+            heuristic_score_category=score.category.value,
+            eligible=True,
+            selected=True,
+            indicators=indicators,
+            score_breakdown=score.breakdown,
+            model_version=self._audit_model_version(predicted_probability_10d_up),
+        )
         
         return StockRecommendation(
             stock_id=stock.stock_id,
@@ -558,6 +778,203 @@ class StockScreener:
             stock_score=score,
             strategy_profile=self.strategy_profile.value,
         )
+
+    def apply_portfolio_audit(
+        self,
+        recommendations: List[StockRecommendation],
+    ) -> None:
+        """Update selected audit entries with portfolio-gate outcomes."""
+        recommendations_by_stock = {
+            recommendation.stock_id: recommendation
+            for recommendation in recommendations
+        }
+
+        for entry in self.last_audit_entries:
+            recommendation = recommendations_by_stock.get(entry.stock_id)
+            if recommendation is None or not entry.selected:
+                continue
+
+            entry.stage_reached = "portfolio_evaluated"
+            entry.portfolio_approved = bool(recommendation.portfolio_approved)
+            entry.portfolio_rejection_reason = (
+                recommendation.portfolio_rejection_reason
+            )
+            entry.portfolio_rank = recommendation.portfolio_rank
+            if not recommendation.portfolio_approved:
+                entry.rejection_reason = recommendation.portfolio_rejection_reason
+                entry.candidate_tier = "watchlist"
+            else:
+                entry.candidate_tier = "approved"
+
+    def _append_audit_entry(
+        self,
+        audit_entries: Optional[List[RecommendationAuditEntry]],
+        *,
+        stock,
+        recommendation_date: date,
+        stage_reached: str,
+        rejection_reason: Optional[str],
+        price_date: Optional[date] = None,
+        indicator_date: Optional[date] = None,
+        current_price: Optional[float] = None,
+        action_type: Optional[str] = None,
+        technical_signal_type: Optional[str] = None,
+        signal_agreement: Optional[float] = None,
+        predicted_probability_10d_up: Optional[float] = None,
+        heuristic_score: Optional[float] = None,
+        heuristic_score_category: Optional[str] = None,
+        eligible: bool = False,
+        selected: bool = False,
+        candidate_tier: Optional[str] = None,
+        indicators: Optional[Dict[str, object]] = None,
+        score_breakdown: Optional[Dict[str, object]] = None,
+        model_version: Optional[str] = None,
+    ) -> None:
+        """Append one audit entry when candidate-funnel capture is enabled."""
+        if audit_entries is None:
+            return
+
+        audit_entries.append(
+            RecommendationAuditEntry(
+                stock_id=stock.stock_id,
+                stock_code=stock.stock_code,
+                recommendation_date=recommendation_date,
+                profile=self.strategy_profile.value,
+                stage_reached=stage_reached,
+                rejection_reason=rejection_reason,
+                price_date=price_date,
+                indicator_date=indicator_date,
+                current_price=current_price,
+                action_type=action_type,
+                technical_signal_type=technical_signal_type,
+                signal_agreement=signal_agreement,
+                predicted_probability_10d_up=predicted_probability_10d_up,
+                heuristic_score=heuristic_score,
+                heuristic_score_category=heuristic_score_category,
+                eligible=eligible,
+                selected=selected,
+                candidate_tier=(
+                    candidate_tier
+                    or self._candidate_tier(
+                        stage_reached=stage_reached,
+                        rejection_reason=rejection_reason,
+                        selected=selected,
+                        portfolio_approved=False,
+                        score=heuristic_score,
+                        action_type=action_type,
+                    )
+                ),
+                indicators=indicators,
+                score_breakdown=score_breakdown,
+                model_version=model_version,
+            )
+        )
+
+    def _apply_profile_score_adjustments(
+        self,
+        score: StockScore,
+        indicators: Dict[str, float],
+    ) -> None:
+        """Apply v2 risk penalties after the base heuristic score."""
+        if self.strategy_profile != RecommendationProfile.STEADY_20P_10D_V2:
+            return
+
+        penalty_reasons: Dict[str, float] = {}
+
+        current_price = indicators.get("current_price")
+        if current_price is not None:
+            if current_price < 1.0:
+                penalty_reasons["low_price_penalty"] = 18.0
+            elif current_price < 3.0:
+                penalty_reasons["low_price_penalty"] = 10.0
+            elif current_price < 8.0:
+                penalty_reasons["low_price_penalty"] = 5.0
+
+        volatility = indicators.get("volatility")
+        if volatility is not None:
+            if volatility > 1.25:
+                penalty_reasons["high_volatility_penalty"] = 18.0
+            elif volatility > 0.90:
+                penalty_reasons["high_volatility_penalty"] = 10.0
+            elif volatility > 0.75:
+                penalty_reasons["high_volatility_penalty"] = 5.0
+
+        volume_ratio = indicators.get("volume_ratio")
+        if volume_ratio is not None:
+            if volume_ratio < 0.25:
+                penalty_reasons["low_volume_penalty"] = 12.0
+            elif volume_ratio < 0.50:
+                penalty_reasons["low_volume_penalty"] = 7.0
+            elif volume_ratio < 0.80:
+                penalty_reasons["low_volume_penalty"] = 3.0
+
+        drawdown_20d_pct = indicators.get("drawdown_20d_pct")
+        if drawdown_20d_pct is not None and drawdown_20d_pct < 1.0:
+            penalty_reasons["no_pullback_penalty"] = 4.0
+
+        price_change_20d = indicators.get("price_change_20d")
+        if price_change_20d is not None:
+            if price_change_20d > 45:
+                penalty_reasons["extended_run_penalty"] = 14.0
+            elif price_change_20d > 30:
+                penalty_reasons["extended_run_penalty"] = 8.0
+            elif price_change_20d > 20:
+                penalty_reasons["extended_run_penalty"] = 4.0
+
+        rsi = indicators.get("rsi_14")
+        if rsi is not None:
+            if rsi > 85 or rsi < 20:
+                penalty_reasons["extreme_rsi_penalty"] = 12.0
+            elif rsi > 78 or rsi < 30:
+                penalty_reasons["extreme_rsi_penalty"] = 6.0
+
+        penalty = sum(penalty_reasons.values())
+        adjusted_score = max(0.0, min(100.0, score.total_score - penalty))
+        score.breakdown.update(penalty_reasons)
+        score.breakdown["v2_total_penalty"] = round(penalty, 2)
+        score.breakdown["pre_penalty_total_score"] = score.total_score
+        score.total_score = round(adjusted_score, 2)
+        score.category = self.stock_scorer._categorize_score(score.total_score)
+
+    @staticmethod
+    def _candidate_tier(
+        *,
+        stage_reached: str,
+        rejection_reason: Optional[str],
+        selected: bool,
+        portfolio_approved: bool,
+        score: Optional[float],
+        action_type: Optional[str] = None,
+    ) -> str:
+        """Classify candidate state for dashboard-facing funnel analysis."""
+        if portfolio_approved:
+            return "approved"
+        if selected:
+            return "watchlist"
+        if stage_reached in {
+            "no_indicator",
+            "no_trusted_price",
+            "indicator_price_date_mismatch",
+        }:
+            return "blocked"
+        if rejection_reason in {
+            "requires_complete_data",
+            "requires_official_data",
+            "below_min_price_confidence",
+            "insufficient_trusted_history",
+        }:
+            return "blocked"
+        if action_type in {"AVOID", "STRONGLY_AVOID"}:
+            return "avoid"
+        if score is not None and score >= 68:
+            return "watchlist"
+        return "avoid"
+
+    def _audit_model_version(self, predicted_probability_10d_up: Optional[float]) -> Optional[str]:
+        """Return the model identifier from the active estimator, or None if no prediction was made."""
+        if predicted_probability_10d_up is None:
+            return None
+        return self.probability_estimator.model_version
     
     def _build_indicators_dict(
         self,
@@ -603,10 +1020,21 @@ class StockScreener:
             for ind in indicators_data:
                 if ind.indicator_type == 'RSI':
                     indicators['rsi_14'] = float(ind.indicator_value)
-                elif ind.indicator_type == 'SMA_50':
+                elif ind.indicator_type == 'SMA_30':
                     indicators['ma_30'] = float(ind.indicator_value)
-                elif ind.indicator_type == 'SMA_200':
+                elif ind.indicator_type == 'SMA_50':
+                    # Old rows labelled SMA_50 were incorrectly mapped to ma_30;
+                    # skip rather than contaminate the 30-day signal with a 50-period value.
+                    self.logger.debug(
+                        f"Skipping legacy SMA_50 indicator — no ma_50 key in current schema"
+                    )
+                elif ind.indicator_type == 'SMA_90':
                     indicators['ma_90'] = float(ind.indicator_value)
+                elif ind.indicator_type == 'SMA_200':
+                    # Same as SMA_50: old 200-period label does not map to ma_90 (90-period).
+                    self.logger.debug(
+                        f"Skipping legacy SMA_200 indicator — period mismatch with ma_90"
+                    )
                 elif ind.indicator_type == 'MACD':
                     indicators['macd'] = float(ind.indicator_value)
                 elif ind.indicator_type == 'MACD_SIGNAL':

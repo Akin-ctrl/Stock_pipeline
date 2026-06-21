@@ -29,7 +29,7 @@ with DAG(
     run_snapshot = BashOperator(
         task_id="run_daily_snapshot",
         bash_command=(
-            "python /Stock_pipeline/scripts/daily_recommendation_snapshot.py "
+            "python -m app.services.reports.daily_snapshot "
             "{% if dag_run and dag_run.conf and dag_run.conf.get('market_date') %}"
             "--snapshot-date {{ dag_run.conf.get('market_date') }}"
             "{% endif %}"

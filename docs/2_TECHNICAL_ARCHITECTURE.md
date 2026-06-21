@@ -302,6 +302,7 @@ Current semantic views include:
 - `vw_stock_price_panel`
 - `vw_recommendation_board`
 - `vw_daily_recommendation_board`
+- `vw_weekly_recommendation_board`
 - `vw_sector_performance`
 - `vw_model_health`
 - `vw_backtest_equity_curve`
@@ -313,6 +314,11 @@ Raw weekly backtest artifacts remain in:
 - `backtest_trades`
 - `recommendation_snapshots`
 - `decision_signals`
+
+Weekly recommendation candidates are persisted separately in
+`weekly_recommendations`. This keeps strict daily execution recommendations in
+`fact_recommendations` while exposing slower watchlist setups through
+`vw_weekly_recommendation_board`.
 
 ## Known Architectural Gaps
 

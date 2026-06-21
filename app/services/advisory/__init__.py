@@ -30,6 +30,7 @@ from app.services.advisory.portfolio_policy import (
 from app.services.advisory.advisor import (
     StockScreener,
     StockRecommendation,
+    RecommendationAuditEntry,
     RecommendationAction,
     RecommendationProfile,
     RecommendationProfileConfig,
@@ -57,6 +58,7 @@ __all__ = [
     'ProductionPortfolioPolicy',
     'StockScreener',
     'StockRecommendation',
+    'RecommendationAuditEntry',
     'RecommendationAction',
     'RecommendationProfile',
     'RecommendationProfileConfig',

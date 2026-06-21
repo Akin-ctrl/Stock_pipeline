@@ -59,6 +59,12 @@ DATASETS = [
         "Current approved and rejected recommendation candidates.",
     ),
     DatasetConfig(
+        "vw_weekly_recommendation_board",
+        "Weekly Recommendation Board",
+        "week_end_date",
+        "Weekly candidate board for watchlist and setup-monitoring decisions.",
+    ),
+    DatasetConfig(
         "vw_recommendation_board",
         "Recommendation History",
         "recommendation_date",
@@ -142,6 +148,12 @@ DATASETS = [
         "market_date",
         "Freshness, coverage, and pipeline-readiness checks.",
     ),
+    DatasetConfig(
+        "vw_latest_recommendation_candidate_funnel",
+        "Candidate Funnel",
+        None,
+        "Candidate funnel for the latest recommendation run.",
+    ),
 ]
 
 
@@ -150,9 +162,19 @@ def _env(name: str, default: str) -> str:
     return value if value not in (None, "") else default
 
 
+def _require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(
+            f"Required environment variable '{name}' is not set. "
+            f"Refusing to start Superset with missing credentials."
+        )
+    return value
+
+
 def _database_uri() -> str:
     user = quote_plus(_env("POSTGRES_USER", "stock_user"))
-    password = quote_plus(_env("POSTGRES_PASSWORD", "stock_password"))
+    password = quote_plus(_require_env("POSTGRES_PASSWORD"))
     host = _env("POSTGRES_HOST", "postgres")
     port = _env("POSTGRES_PORT", "5432")
     name = _env("POSTGRES_DB", "stock_pipeline")
@@ -363,6 +385,7 @@ def _bar_params(
 def _chart_configs(dataset_refs: dict[str, str]) -> list[ChartConfig]:
     command = dataset_refs["vw_dashboard_command_center"]
     daily = dataset_refs["vw_daily_recommendation_board"]
+    weekly = dataset_refs["vw_weekly_recommendation_board"]
     history = dataset_refs["vw_recommendation_board"]
     market = dataset_refs["vw_market_overview"]
     sector = dataset_refs["vw_sector_performance"]
@@ -376,6 +399,7 @@ def _chart_configs(dataset_refs: dict[str, str]) -> list[ChartConfig]:
     trades = dataset_refs["vw_trade_distribution"]
     quality = dataset_refs["vw_data_quality_monitor"]
     prices = dataset_refs["vw_stock_price_panel"]
+    funnel = dataset_refs["vw_latest_recommendation_candidate_funnel"]
 
     return [
         ChartConfig(
@@ -664,7 +688,7 @@ def _chart_configs(dataset_refs: dict[str, str]) -> list[ChartConfig]:
             "table",
             _table_params(
                 daily,
-                ["recommendation_rank", "stock_code", "sector_name", "portfolio_approved", "predicted_probability_10d_up_pct", "risk_reward_ratio"],
+                ["recommendation_rank", "stock_code", "sector_name", "action_type", "predicted_probability_10d_up_pct", "risk_reward_ratio"],
                 "recommendation_date",
                 row_limit=20,
                 server_page_length=10,
@@ -672,6 +696,83 @@ def _chart_configs(dataset_refs: dict[str, str]) -> list[ChartConfig]:
             "Short preview of current recommendations.",
             width=6,
             height=30,
+        ),
+        ChartConfig(
+            "Candidate Funnel",
+            "vw_latest_recommendation_candidate_funnel",
+            "echarts_timeseries_bar",
+            _bar_params(
+                funnel,
+                "stage_reached",
+                _sql_metric("SUM(stock_count)", "Stocks"),
+                [],
+                None,
+                row_limit=20,
+            ),
+            "How many stocks were blocked at each pipeline stage.",
+            width=6,
+            height=34,
+        ),
+        ChartConfig(
+            "Weekly Recommendation Board",
+            "vw_weekly_recommendation_board",
+            "table",
+            _table_params(
+                weekly,
+                [
+                    "rank",
+                    "weekly_status",
+                    "stock_code",
+                    "company_name",
+                    "sector_name",
+                    "action_type",
+                    "heuristic_score",
+                    "signal_agreement",
+                    "rejection_reason",
+                    "current_price",
+                    "price_change_20d",
+                    "drawdown_20d_pct",
+                    "volume_ratio",
+                ],
+                "week_end_date",
+                row_limit=50,
+                server_page_length=15,
+            ),
+            "Weekly watchlist candidates ranked by model score with daily gate context.",
+            width=12,
+            height=46,
+        ),
+        ChartConfig(
+            "Weekly Status Mix",
+            "vw_weekly_recommendation_board",
+            "echarts_timeseries_bar",
+            _bar_params(
+                weekly,
+                "weekly_status",
+                _sql_metric("COUNT(*)", "Candidates"),
+                [],
+                None,
+                row_limit=20,
+            ),
+            "Weekly candidates grouped by action label.",
+            width=6,
+            height=34,
+        ),
+        ChartConfig(
+            "Weekly Sector Mix",
+            "vw_weekly_recommendation_board",
+            "echarts_timeseries_bar",
+            _bar_params(
+                weekly,
+                "sector_name",
+                _sql_metric("COUNT(*)", "Candidates"),
+                ["weekly_status"],
+                None,
+                row_limit=30,
+            ),
+            "Sector concentration of weekly candidates.",
+            width=6,
+            height=34,
         ),
         ChartConfig(
             "Rejection Reasons",
@@ -908,7 +1009,7 @@ def _chart_configs(dataset_refs: dict[str, str]) -> list[ChartConfig]:
             legacy_names=("Model - Sector Performance",),
         ),
         ChartConfig(
-            "Stock Performance",
+            "Historical Model Trades",
             "vw_stock_model_performance",
             "table",
             _table_params(
@@ -917,10 +1018,10 @@ def _chart_configs(dataset_refs: dict[str, str]) -> list[ChartConfig]:
                 None,
                 row_limit=75,
             ),
-            "Stock-level model performance drilldown.",
-            width=4,
+            "Historical backtest performance per stock.",
+            width=6,
             height=34,
-            legacy_names=("Model - Best Stocks",),
+            legacy_names=("Model - Best Stocks", "Stock Performance"),
         ),
         ChartConfig(
             "Best Stocks",
@@ -955,7 +1056,7 @@ def _chart_configs(dataset_refs: dict[str, str]) -> list[ChartConfig]:
             "Price Trend",
             "vw_stock_price_panel",
             "echarts_timeseries_line",
-            _line_params(prices, "price_date", [_simple_metric("close_price", "AVG", "Close Price")], ["stock_code"], row_limit=5000),
+            _line_params(prices, "price_date", [_simple_metric("close_price", "AVG", "Close Price")], [], row_limit=10000),
             "Close-price trend by stock.",
             width=8,
             height=40,
@@ -983,7 +1084,7 @@ def _chart_configs(dataset_refs: dict[str, str]) -> list[ChartConfig]:
             "RSI",
             "vw_stock_price_panel",
             "echarts_timeseries_line",
-            _line_params(prices, "price_date", [_simple_metric("rsi_14", "AVG", "RSI 14")], ["stock_code"], row_limit=5000),
+            _line_params(prices, "price_date", [_simple_metric("rsi_14", "AVG", "RSI 14")], [], row_limit=10000),
             "Relative strength trend.",
             width=4,
             height=32,
@@ -996,8 +1097,8 @@ def _chart_configs(dataset_refs: dict[str, str]) -> list[ChartConfig]:
                 prices,
                 "price_date",
                 [_simple_metric("macd", "AVG", "MACD"), _simple_metric("macd_signal", "AVG", "Signal")],
-                ["stock_code"],
-                row_limit=5000,
+                [],
+                row_limit=10000,
             ),
             "MACD and signal-line context.",
             width=4,
@@ -1007,7 +1108,7 @@ def _chart_configs(dataset_refs: dict[str, str]) -> list[ChartConfig]:
             "Volatility",
             "vw_stock_price_panel",
             "echarts_timeseries_line",
-            _line_params(prices, "price_date", [_simple_metric("volatility_30", "AVG", "Volatility 30")], ["stock_code"], row_limit=5000),
+            _line_params(prices, "price_date", [_simple_metric("volatility_30", "AVG", "Volatility 30")], [], row_limit=10000),
             "30-day volatility trend.",
             width=4,
             height=32,
@@ -1110,17 +1211,16 @@ DASHBOARDS = [
             "Decision Status",
             "Run Date",
             "Market Date",
-            "Approved Picks",
             "Data Quality",
+            "Approved Picks",
             "Portfolio Return",
             "Max Drawdown",
             "Win Rate",
             "Profit Factor",
-            "Equity Curve",
-            "Drawdown Curve",
+            "Candidate Funnel",
+            "Recommendation Preview",
             "Market Breadth",
             "Sector Pulse",
-            "Recommendation Preview",
         ),
         legacy_titles=("NGX Advisory Command Center",),
         row_message="Trust, freshness, and actionability before any trade decision.",
@@ -1136,6 +1236,7 @@ DASHBOARDS = [
             "Average Risk-Reward",
             "Average Upside",
             "Average Downside",
+            "Candidate Funnel",
             "Recommendation Board",
             "Rejection Reasons",
             "Sector Exposure",
@@ -1143,6 +1244,19 @@ DASHBOARDS = [
             "Probability vs Signal Agreement",
         ),
         row_message="Trading blotter for the current advisory run.",
+    ),
+    DashboardConfig(
+        "Weekly Recommendation Board",
+        "weekly-recommendation-board",
+        "Weekly watchlist workspace for slower setups, pullback waits, volume waits, and high-risk candidates.",
+        (
+            "Weekly Recommendation Board",
+            "Weekly Status Mix",
+            "Weekly Sector Mix",
+            "Market Breadth",
+            "Sector Pulse",
+        ),
+        row_message="Weekly candidates are not automatic buys; each label explains what must improve before daily approval.",
     ),
     DashboardConfig(
         "Market & Sector Pulse",
@@ -1158,7 +1272,6 @@ DASHBOARDS = [
             "Market Return Trend",
             "Sector Pulse",
             "Sector Volume",
-            "Sector Recommendations",
             "Strongest Sectors",
         ),
         row_message="A market map for deciding whether sector strength supports the model.",
@@ -1178,7 +1291,7 @@ DASHBOARDS = [
             "Drawdown Curve",
             "Return Distribution",
             "Sector Model Performance",
-            "Stock Performance",
+            "Historical Model Trades",
             "Validation Runs",
             "Yearly Performance",
         ),
@@ -1196,10 +1309,10 @@ DASHBOARDS = [
             "MACD",
             "Volatility",
             "Recommendation History",
-            "Stock Performance",
             "Sector Context",
+            "Historical Model Trades",
         ),
-        row_message="One-stock-at-a-time context before action.",
+        row_message="Select a stock and time range from the filters to view its tear sheet.",
     ),
     DashboardConfig(
         "Data Quality",
@@ -1414,53 +1527,120 @@ body, .dashboard, .dashboard-content, .grid-container {
     return f"{base_css}\n{kpi_css}".strip()
 
 
-def _dashboard_metadata() -> str:
-    return json.dumps(
-        {
-            "color_namespace": "stock_pipeline",
-            "color_scheme": FINANCE_COLOR_SCHEME,
-            "default_filters": "{}",
-            "label_colors": {
-                "Advancers": "#14b8a6",
-                "Approved": "#22c55e",
-                "Decliners": "#fb7185",
-                "Drawdown": "#fb7185",
-                "GREEN": "#22c55e",
-                "Rejected": "#fb7185",
-                "RED": "#ef4444",
-                "YELLOW": "#f59e0b",
-                "Equity": "#38bdf8",
-                "Average Return": "#facc15",
-                "Average 1D Return": "#facc15",
-                "Trades": "#94a3b8",
-            },
-            "map_label_colors": {
-                "Advancers": "#14b8a6",
-                "Decliners": "#fb7185",
-                "Equity": "#60a5fa",
-                "Drawdown": "#f472b6",
-                "Average Return": "#a78bfa",
-                "Average 1D Return": "#a78bfa",
-                "Average Upside": "#34d399",
-                "Average Downside": "#fb7185",
-                "Average Probability": "#22d3ee",
-                "Average Risk-Reward": "#facc15",
-                "Close Price": "#38bdf8",
-                "MA 7": "#34d399",
-                "MA 30": "#a78bfa",
-                "MA 90": "#facc15",
-                "RSI 14": "#22d3ee",
-                "MACD": "#60a5fa",
-                "Signal": "#f472b6",
-                "Approved": "#22c55e",
-                "Rejected": "#fb7185",
-            },
-            "refresh_frequency": 0,
-            "timed_refresh_immune_slices": [],
-            "expanded_slices": {},
+def _dashboard_metadata(slug: str = "") -> str:
+    meta: dict[str, Any] = {
+        "color_namespace": "stock_pipeline",
+        "color_scheme": FINANCE_COLOR_SCHEME,
+        "default_filters": "{}",
+        "label_colors": {
+            "Advancers": "#14b8a6",
+            "Approved": "#22c55e",
+            "Decliners": "#fb7185",
+            "Drawdown": "#fb7185",
+            "GREEN": "#22c55e",
+            "Rejected": "#fb7185",
+            "RED": "#ef4444",
+            "YELLOW": "#f59e0b",
+            "Equity": "#38bdf8",
+            "Average Return": "#facc15",
+            "Average 1D Return": "#facc15",
+            "Trades": "#94a3b8",
+            "Stocks": "#60a5fa",
         },
-        sort_keys=True,
-    )
+        "map_label_colors": {
+            "Advancers": "#14b8a6",
+            "Decliners": "#fb7185",
+            "Equity": "#60a5fa",
+            "Drawdown": "#f472b6",
+            "Average Return": "#a78bfa",
+            "Average 1D Return": "#a78bfa",
+            "Average Upside": "#34d399",
+            "Average Downside": "#fb7185",
+            "Average Probability": "#22d3ee",
+            "Average Risk-Reward": "#facc15",
+            "Close Price": "#38bdf8",
+            "MA 7": "#34d399",
+            "MA 30": "#a78bfa",
+            "MA 90": "#facc15",
+            "RSI 14": "#22d3ee",
+            "MACD": "#60a5fa",
+            "Signal": "#f472b6",
+            "Approved": "#22c55e",
+            "Rejected": "#fb7185",
+            "Volatility 30": "#fb923c",
+        },
+        "refresh_frequency": 0,
+        "timed_refresh_immune_slices": [],
+        "expanded_slices": {},
+    }
+
+    # --- Native filters ---
+    native_filters: list[dict[str, Any]] = []
+
+    # Profile filter on all dashboards (no default — shows both profiles).
+    native_filters.append({
+        "id": "NATIVE_FILTER_PROFILE",
+        "controlValues": {
+            "enableEmptyFilter": False,
+            "defaultToFirstItem": False,
+            "multiSelect": True,
+            "searchAllOptions": False,
+            "inverseSelection": False,
+        },
+        "name": "Profile",
+        "filterType": "filter_select",
+        "targets": [{"column": {"name": "profile"}, "datasetId": 0}],
+        "defaultDataMask": {"filterState": {"value": None}},
+        "scope": {"rootPath": ["ROOT_ID"], "excluded": []},
+        "type": "NATIVE_FILTER",
+        "description": "Filter by recommendation profile.",
+        "chartsInScope": [],
+        "tabsInScope": [],
+    })
+
+    # Stock Drilldown gets extra filters.
+    if slug == "stock-drilldown":
+        native_filters.append({
+            "id": "NATIVE_FILTER_STOCK_CODE",
+            "controlValues": {
+                "enableEmptyFilter": False,
+                "defaultToFirstItem": False,
+                "multiSelect": False,
+                "searchAllOptions": True,
+                "inverseSelection": False,
+            },
+            "name": "Stock",
+            "filterType": "filter_select",
+            "targets": [{"column": {"name": "stock_code"}, "datasetId": 0}],
+            "defaultDataMask": {"filterState": {"value": None}},
+            "scope": {"rootPath": ["ROOT_ID"], "excluded": []},
+            "type": "NATIVE_FILTER",
+            "description": "Select a stock to drill into.",
+            "chartsInScope": [],
+            "tabsInScope": [],
+        })
+        native_filters.append({
+            "id": "NATIVE_FILTER_TIME_RANGE",
+            "controlValues": {},
+            "name": "Time Range",
+            "filterType": "filter_time",
+            "targets": [{}],
+            "defaultDataMask": {
+                "filterState": {
+                    "value": "Last year",
+                },
+            },
+            "scope": {"rootPath": ["ROOT_ID"], "excluded": []},
+            "type": "NATIVE_FILTER",
+            "description": "Filter charts by time range.",
+            "chartsInScope": [],
+            "tabsInScope": [],
+        })
+
+    meta["native_filter_configuration"] = native_filters
+    meta["filter_sets_configuration"] = []
+
+    return json.dumps(meta, sort_keys=True)
 
 
 def _build_position(charts: list[tuple[Any, ChartConfig]], config: DashboardConfig) -> dict[str, Any]:
@@ -1543,7 +1723,7 @@ def _upsert_dashboard(
     dashboard.css = _dashboard_css(dashboard_charts)
     dashboard.published = True
     dashboard.position_json = json.dumps(_build_position(dashboard_charts, config), sort_keys=True)
-    dashboard.json_metadata = _dashboard_metadata()
+    dashboard.json_metadata = _dashboard_metadata(config.slug)
     dashboard.slices = [chart for chart, _ in dashboard_charts]
     db.session.flush()
     return f"{config.title}: {action}, {len(dashboard_charts)} charts attached"

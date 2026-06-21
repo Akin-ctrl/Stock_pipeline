@@ -7,6 +7,13 @@ from datetime import date, timedelta
 from typing import Mapping, Optional, Protocol, Sequence
 
 import numpy as np
+import os
+try:
+    import mlflow
+    from mlflow.tracking import MlflowClient
+except ModuleNotFoundError:
+    mlflow = None
+    MlflowClient = None
 
 from app.services.modeling.dataset_builder import (
     ModelingDatasetBuilder,
@@ -25,6 +32,10 @@ from app.utils import get_logger
 class ProbabilityEstimator(Protocol):
     """Interface for probability estimators used by recommendation services."""
 
+    @property
+    def model_version(self) -> Optional[str]:
+        """Identifier for the model that produced the last prediction, or None."""
+
     def estimate_probability_10d_up(
         self,
         feature_snapshot: Mapping[str, object],
@@ -34,6 +45,10 @@ class ProbabilityEstimator(Protocol):
 
 class NullProbabilityEstimator:
     """Compatibility estimator used before a trained probability model exists."""
+
+    @property
+    def model_version(self) -> Optional[str]:
+        return None
 
     def estimate_probability_10d_up(
         self,
@@ -112,6 +127,10 @@ class LogisticProbabilityModel:
 
 class HistoricalLogisticProbabilityEstimator:
     """Train a rolling historical logistic baseline on the canonical dataset."""
+
+    @property
+    def model_version(self) -> Optional[str]:
+        return "historical_logistic_v1"
 
     def __init__(
         self,
@@ -262,3 +281,110 @@ class HistoricalLogisticProbabilityEstimator:
 def _sigmoid(values) -> np.ndarray:
     """Numerically stable sigmoid for numpy arrays or scalars."""
     return 1.0 / (1.0 + np.exp(-np.clip(values, -30.0, 30.0)))
+
+
+class MLflowProbabilityEstimator:
+    """Query MLflow for the latest registered production models.
+
+    Requires MLFLOW_TRACKING_URI to be set in the environment when running
+    outside Docker Compose (default: http://mlflow:5000, which only resolves
+    inside the stock_network bridge network).
+    """
+
+    def __init__(
+        self,
+        horizon_days: int = 10,
+        tracking_uri: Optional[str] = None,
+    ):
+        self.horizon_days = horizon_days
+        self.tracking_uri = tracking_uri or os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+        self.model_name = f"stock_direction_{horizon_days}d_model"
+        self.logger = get_logger(f"mlflow_estimator_{horizon_days}d")
+        self._model = None
+        self.model_unavailable: bool = False
+        self._null_fallback_warned: bool = False
+
+        try:
+            if mlflow is None:
+                raise ImportError("mlflow is not installed in this environment")
+            mlflow.set_tracking_uri(self.tracking_uri)
+            self.client = MlflowClient(tracking_uri=self.tracking_uri)
+            self._load_latest_model()
+        except Exception as e:
+            self.logger.error(
+                f"Failed to initialize MLflow client for {self.model_name}. "
+                f"Ensure mlflow package is installed and server is running. Error: {e}"
+            )
+            self.client = None
+            self._model = None
+            self.model_unavailable = True
+
+    @property
+    def model_version(self) -> Optional[str]:
+        return self.model_name if self._model is not None else None
+
+    def _load_latest_model(self):
+        """Attempt to load the latest registered model."""
+        try:
+            # First try loading "Production" alias/stage, otherwise latest
+            model_uri = f"models:/{self.model_name}/latest"
+            import xgboost as xgb
+            self._model = mlflow.xgboost.load_model(model_uri)
+            self.model_unavailable = False
+            self.logger.info(f"Successfully loaded MLflow model: {self.model_name}")
+        except Exception as e:
+            self.logger.error(
+                f"Failed to load MLflow model {self.model_name}. "
+                f"Ensure it is trained and registered. Error: {e}"
+            )
+            self._model = None
+            self.model_unavailable = True
+
+    def estimate_probability_10d_up(
+        self,
+        feature_snapshot: Mapping[str, object],
+    ) -> Optional[float]:
+        """Estimate the positive direction probability using XGBoost from MLflow."""
+        if self._model is None:
+            if not self._null_fallback_warned:
+                self.logger.warning(
+                    f"MLflow model '{self.model_name}' is unavailable — all probability "
+                    "estimates will be None for this run. Recommendations will be generated "
+                    "without ML confidence scores. Train the model first with: "
+                    "python -m app.cli models train"
+                )
+                self._null_fallback_warned = True
+            return None
+
+        # Extract stable mapping
+        feature_mapping = extract_probability_features_from_snapshot(feature_snapshot)
+        
+        # XGBoost requires a Pandas DataFrame matching the exact training columns
+        import pandas as pd
+        df = pd.DataFrame([feature_mapping])
+        
+        # Detect and log any features the model expects but the snapshot lacks.
+        # XGBoost will silently use its internal missing-value handling for absent
+        # features, which may produce very different probabilities than intended.
+        missing_features = [f for f in PROBABILITY_FEATURE_NAMES if f not in df.columns]
+        if missing_features:
+            self.logger.warning(
+                f"Probability estimate missing {len(missing_features)} feature(s): "
+                f"{missing_features}. Prediction may be unreliable."
+            )
+            if len(missing_features) > len(PROBABILITY_FEATURE_NAMES) // 2:
+                self.logger.error(
+                    f"More than half the required features are absent "
+                    f"({len(missing_features)}/{len(PROBABILITY_FEATURE_NAMES)}); "
+                    f"skipping prediction to avoid garbage output."
+                )
+                return None
+
+        df = df[[f for f in PROBABILITY_FEATURE_NAMES if f in df.columns]]
+
+        try:
+            proba = self._model.predict_proba(df)[0][1]
+            return float(proba)
+        except Exception as e:
+            self.logger.error(f"Error predicting with MLflow model: {e}")
+            return None

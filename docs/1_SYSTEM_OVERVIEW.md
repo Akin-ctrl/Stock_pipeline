@@ -112,6 +112,7 @@ Manual or triggered DAGs:
 The daily stock pipeline is scheduled for `0 17 * * 1-5`, meaning 5:00 PM
 Africa/Lagos on weekdays. It starts paused on creation and triggers
 `daily_steady_snapshot` after successful completion. The weekly steady backtest
+also rebuilds the weekly recommendation board after validation.
 runs Fridays at 8:00 PM Africa/Lagos.
 
 ## Current Limitations

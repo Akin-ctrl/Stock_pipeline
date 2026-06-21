@@ -13,7 +13,13 @@ from datetime import date, timedelta
 from decimal import Decimal
 from sqlalchemy.orm import Session
 
-from app.models import DimSector, DimStock, FactDailyPrice, FactTechnicalIndicator
+from app.models import (
+    DimSector,
+    DimStock,
+    FactDailyPrice,
+    FactRecommendationAudit,
+    FactTechnicalIndicator,
+)
 from app.repositories.price_repository import PriceRepository
 from app.repositories.indicator_repository import IndicatorRepository
 from app.repositories.recommendation_repository import RecommendationRepository
@@ -76,12 +82,25 @@ class TestRecommendationPath:
         for stock in stocks:
             for i in range(30):
                 price_date = base_date + timedelta(days=i)
-                close_price = Decimal("100.00") + Decimal(str(i * 0.60))
-                previous_close = (
-                    Decimal("100.00") + Decimal(str((i - 1) * 0.60))
-                    if i > 0
-                    else None
-                )
+                if i <= 26:
+                    close_price = Decimal("100.00") + Decimal(str(i * 0.35))
+                else:
+                    pullback_prices = {
+                        27: Decimal("108.50"),
+                        28: Decimal("108.00"),
+                        29: Decimal("107.80"),
+                    }
+                    close_price = pullback_prices[i]
+
+                if i == 0:
+                    previous_close = None
+                elif i <= 27:
+                    previous_close = Decimal("100.00") + Decimal(str((i - 1) * 0.35))
+                else:
+                    previous_close = {
+                        28: Decimal("108.50"),
+                        29: Decimal("108.00"),
+                    }[i]
                 change_1d_pct = None
                 if previous_close is not None and previous_close > 0:
                     change_1d_pct = (
@@ -114,9 +133,9 @@ class TestRecommendationPath:
                 FactTechnicalIndicator(
                     stock_id=stock.stock_id,
                     calculation_date=recommendation_date,
-                    ma_7=Decimal("114.00"),
-                    ma_30=Decimal("109.00"),
-                    ma_90=Decimal("103.00"),
+                    ma_7=Decimal("108.00"),
+                    ma_30=Decimal("104.00"),
+                    ma_90=Decimal("99.00"),
                     rsi_14=Decimal("58.00"),
                     macd=Decimal("2.10"),
                     macd_signal=Decimal("1.40"),
@@ -185,6 +204,7 @@ class TestRecommendationPath:
             recommendation_date=recommendation_date,
             min_score=40.0,
             min_confidence=0.50,
+            capture_audit=True,
         )
 
         assert len(recommendations) > 0, (
@@ -219,12 +239,23 @@ class TestRecommendationPath:
 
         logger.info("\n[CHECK 6] Persisting recommendations to database...")
         rec_repo = RecommendationRepository(db_session)
+        audit_count = rec_repo.replace_audit_entries(
+            recommendation_date=recommendation_date,
+            profile=screener.strategy_profile.value,
+            audit_entries=screener.last_audit_entries,
+        )
         saved_count = rec_repo.create_recommendations_bulk(recommendations)
+        assert audit_count == len(stocks)
         assert saved_count == len(recommendations)
 
         logger.info("\n[CHECK 7] Verifying persisted recommendations...")
         persisted = rec_repo.get_recommendations_by_date(recommendation_date)
         assert len(persisted) == len(recommendations)
+        persisted_audit = db_session.query(FactRecommendationAudit).filter(
+            FactRecommendationAudit.recommendation_date == recommendation_date,
+        ).all()
+        assert len(persisted_audit) == len(stocks)
+        assert {row.stage_reached for row in persisted_audit} == {"selected"}
         logger.info(f"✓ {len(persisted)} recommendations persisted successfully")
 
         logger.info("\n" + "=" * 80)
@@ -261,10 +292,27 @@ class TestRecommendationPath:
             min_score=40.0,
             min_confidence=0.50,
             stock_codes=[stock.stock_code],
+            capture_audit=True,
         )
 
         logger.info(f"✓ Generated {len(recommendations)} recommendations (expected 0)")
         assert recommendations == []
+        assert len(screener.last_audit_entries) == 1
+        assert screener.last_audit_entries[0].stage_reached == "no_indicator"
+
+        rec_repo = RecommendationRepository(db_session)
+        audit_count = rec_repo.replace_audit_entries(
+            recommendation_date=date.today(),
+            profile=screener.strategy_profile.value,
+            audit_entries=screener.last_audit_entries,
+            full_snapshot=False,
+        )
+        assert audit_count == 1
+
+        persisted_audit = db_session.query(FactRecommendationAudit).one()
+        assert persisted_audit.stock_id == stock.stock_id
+        assert persisted_audit.rejection_reason == "no_indicator"
+        assert persisted_audit.selected is False
 
         logger.info("\n" + "=" * 80)
         logger.info("✅ EDGE CASE TEST PASSED")
